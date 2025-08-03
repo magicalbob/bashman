@@ -1,0 +1,38 @@
+default:
+  tags:
+    - linux
+
+stages:
+  - test
+
+cache:
+  paths:
+    - .cache/pip/
+    - venv/
+
+run_tests:
+  image: docker.ellisbs.co.uk:5190/python:3.12
+  stage: test
+  needs: ["test_base_install", "test_dev_install"]
+  before_script:
+    - python -m venv venv
+    - source venv/bin/activate
+    - python -m pip install --upgrade pip
+  script:
+    - echo "Installing package with dev dependencies..."
+    - pip install -e .[dev]
+    - echo "Running tests with pytest..."
+    - python3 -m pytest
+    - echo "✅ All tests passed"
+    - echo "Coverage file location:"
+    - ls -la coverage.xml || echo "coverage.xml not found"
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - htmlcov/
+      - coverage.xml
+    expire_in: 1 week
+  coverage: '/^TOTAL.+?(\d+\%)$/'
