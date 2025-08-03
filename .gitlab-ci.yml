@@ -107,11 +107,11 @@ build_docker:
     - docker build -t $IMAGE_NAME .
     - docker push $IMAGE_NAME
 
-deploy_resillientic:
+deploy_bashman:
   image: docker.ellisbs.co.uk:5190/docker:24
   stage: deploy
   script:
-    - echo "Deploying Resillientic app container..."
+    - echo "Deploying Bashman app container..."
     - export DOCKER_HOST=unix:///root/run/docker-host.sock
     - docker stop bashman-app || true
     - docker rm bashman-app || true
