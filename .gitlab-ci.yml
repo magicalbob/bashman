@@ -7,6 +7,7 @@ stages:
   - test
   - scan
   - build
+  - publish
 
 variables:
   SONAR_SCANNER_VERSION: 5.0.1.3006
@@ -57,8 +58,6 @@ sonar_scan:
 
 build:
   stage: build
-  tags:
-    - linux
   script:
     - python3 -m venv /tmp/venv
     - source /tmp/venv/bin/activate
@@ -70,3 +69,24 @@ build:
       - dist/*.whl
   needs:
     - sonar_scan
+
+publish:
+  stage: publish
+  script:
+    - python3 -m venv /tmp/venv
+    - source /tmp/venv/bin/activate
+    - pip install -e ".[dev]"
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+        echo "🚀 Publishing to Nexus (main branch)"
+        twine upload --repository-url https://nexus.ellisbs.co.uk/repository/pypi-hosted/ --username admin --password $PYPI_PASSWORD dist/*
+      else
+        echo "🔍 Rehearsing publish (branch: $CI_COMMIT_REF_NAME)"
+        twine check dist/*
+        echo "✅ Package would be valid for publishing"
+        echo "📦 Files that would be uploaded:"
+        ls -la dist/
+        echo "🎭 Rehearsal complete - no actual upload performed"
+      fi
+  dependencies:
+    - build
