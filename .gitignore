@@ -1,3 +1,6 @@
 # Python generated files
 src/bashman/__pycache__
 src/bashman.egg-info
+
+# chunkwrap workfile
+.chunkwrap_state

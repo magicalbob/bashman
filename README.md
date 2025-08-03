@@ -8,195 +8,168 @@ Bashman: The Package Manager for Bash Scripts
 Table of Contents
 -----------------
 
-1.  [Why Bashman?](https://gitlab.ellisbs.co.uk/ian/bashman#why-bashman)
+1.  [Quickstart](#quickstart)
 
-2.  [Key Concepts](https://gitlab.ellisbs.co.uk/ian/bashman#key-concepts)
+2.  [CLI Commands](#cli-commands)
 
-3.  [Package Format](https://gitlab.ellisbs.co.uk/ian/bashman#package-format)
+3.  [Server Usage](#server-usage)
 
-4.  [CLI Reference](https://gitlab.ellisbs.co.uk/ian/bashman#cli-reference)
+4.  [Package Format](#package-format)
 
-5.  [Registry & Discovery](https://gitlab.ellisbs.co.uk/ian/bashman#registry--discovery)
+5.  [Roadmap](#roadmap)
 
-6.  [Security Model](https://gitlab.ellisbs.co.uk/ian/bashman#security-model)
-
-7.  [Roadmap](https://gitlab.ellisbs.co.uk/ian/bashman#roadmap)
-
-8.  [Governance & Contribution](https://gitlab.ellisbs.co.uk/ian/bashman#governance--contribution)
+6.  [Contributing](#contributing)
 
 * * * * *
 
-Why Bashman?
-------------
+Quickstart
+----------
 
--   **Formalize Your Scripts**: Move from ad‑hoc Gists or repos to a standardized package with metadata, versioning, and dependency declarations.
+1.  **Install Bashman**\
+    pip install bashman
 
--   **Discoverability**: Browse, filter, and search by keywords, categories, or popularity---both on the web and via the CLI.
+2.  **Initialize your workspace**\
+    bashman init
 
--   **Reproducible Installs**: Pin versions, resolve dependencies (e.g. `jq`, `curl`), and track exact install procedures.
+3.  **Start the registry server** (localhost:8000 by default)\
+    bashman start\
+    Logs → ~/.bashman_server.log\
+    PID → ~/.bashman_server.pid
 
--   **Security by Design**: Optional, pluggable pipelines for linting, sandboxed execution, and AI‑assisted review.
+4.  **Publish a package**\
+    bashman publish myscript 0.1.0 "A brief description"
+
+5.  **Explore packages**\
+    bashman list\
+    bashman search backup\
+    bashman install myscript
 
 * * * * *
 
-Key Concepts
+CLI Commands
 ------------
 
--   **Package**: A directory with a `bashman.json` manifest + subdirectories (`bin/`, `lib/`, etc.).
+### Server
 
--   **Registry**: A CouchDB‑style index of packages (public or private). Provides search, metadata, and version resolution.
+bashman start [--host HOST] [--port PORT]\
+bashman stop\
+bashman status
 
--   **Tap**: A user‑hosted registry (self‑hostable) that can be added with `bashman tap add <name> <url>`.
+### Registry Taps
+
+bashman tap add <name> <url>\
+bashman tap remove <name>\
+bashman tap list
+
+### Discover & Manage
+
+bashman search <term> [--keywords] [--classifiers]\
+bashman trending [--period=weekly|monthly]\
+bashman new [--period=weekly|monthly]\
+bashman install <pkg>[@<version>]\
+bashman upgrade <pkg>[@<version>]\
+bashman uninstall <pkg>\
+bashman info <pkg>
+
+### Authoring
+
+bashman create <package> # scaffold new package\
+bashman publish <name> <version> "<description>"
+
+> **Note:** Currently only a single local registry (<http://127.0.0.1:8000>) is supported. Remote taps must point to static JSON endpoints.
+
+* * * * *
+
+Server Usage
+------------
+
+The server provides:
+
+-   **Web UI** at `/`
+
+-   **JSON API** under `/api/packages`
+
+Endpoints:
+
+GET /api/packages\
+GET /api/packages/{name}\
+POST /api/packages\
+POST /api/packages/form
+
+Use `/api/v1/search` (coming soon) for IDE or CI integrations.
 
 * * * * *
 
 Package Format
 --------------
 
-Every Bashman package must include a **`bashman.json`** manifest at its root.
+Every package root must include `bashman.json` with fields:
 
-```
-{
-  "name": "myscript",                // unique identifier (kebab-case)
-  "version": "1.2.3",               // semantic version
-  "description": "Short summary.",
-  "homepage": "https://...",          // project URL
-  "repository": "https://...",        // Git repo
-  "license": "MIT",
-  "keywords": ["networking","cli"],
-  "classifiers": [                    // free‑form or from a registry taxonomy
-    "Topic :: System :: Monitoring",
-    "Environment :: Console"
-  ],
-  "dependencies": {                   // external binaries or other bashman packages
-    "jq": ">=1.6",
-    "bash-utils": "^0.5"
-  },
-  "platforms": ["linux","macos"],
-  "shell": ">=4.4"
-}
+-   name: unique kebab-case identifier
 
-```
+-   version: semantic version
 
-Directory structure:
+-   description: short summary
 
-```
-my-script/
-├── bashman.json
-├── bin/           # executables that go into $PATH
-│   └── myscript
-├── lib/           # helper scripts
-├── config/        # default config templates
-├── install.sh     # optional custom installer
-└── uninstall.sh   # optional custom uninstaller
+-   homepage: project URL
 
-```
+-   repository: Git repo URL
 
-* * * * *
+-   license: SPDX identifier
 
-CLI Reference
--------------
+-   keywords: list of terms for discovery
 
-### Global Commands
+-   dependencies: mapping of binaries or other packages to semver constraints
 
-```
-# Initialize your workspace (~/.bashman)
-bashman init
+-   platforms: supported OSes
 
-# Add or remove registries (taps)
-bashman tap add   <name> <url>
-bashman tap remove <name>
+-   shell: required shell version
 
-# List all taps
-tbashman tap list
+Typical layout:
 
-```
-
-### End‑User Commands
-
-```
-# Discover
-bashman search <term> [--classifiers=... --keywords=...]  # full-text + filter
-bashman trending [--period=weekly|monthly]               # most-installed recently
-bashman new      [--period=weekly|monthly]               # latest published
-
-# Install & Manageashman install   <package>[@<version>]   # default latest
-bashman upgrade   <package>[@<version>]   # bump one or all
-bashman list                                # show installed
-bashman uninstall <package>                 # remove
-bashman info     <package>                 # metadata dump
-
-```
-
-### Author Commands
-
-```
-bashman create <package>        # scaffold directory + bashman.jsonashman publish [--tap=<name>]  # push to registry + validation pipeline
-bashman version bump [major|minor|patch]
-
-```
-
-* * * * *
-
-Registry & Discovery
---------------------
-
-1.  **Public Registry** at `registry.bashman.sh` (curated, security‑scored, official packages).
-
-2.  **User Taps** -- self‑hosted CouchDB instances or simple static JSON indexes.
-
-3.  **Search API** -- JSON endpoint for external tooling (IDEs, CI badges):
-
-    ```
-    GET /api/v1/search?q=backup&classifiers=Security&sort=downloads
-
-    ```
-
-4.  **Website** -- browse by category, filter by shell version, license, platform, or security score.
-
-* * * * *
-
-Security Model
---------------
-
-Bashman's security pipeline is **opt‑in**. You choose which validators to run on `publish`:
-
-1.  **Lint & Style** (`shellcheck`, `shfmt`)
-
-2.  **Sandboxed Execution** (Docker sandbox + resource limits)
-
-3.  **AI‑Assisted Review** (LLM checks for suspicious patterns)
-
-4.  **Digital Signatures** (GPG signing of tarballs)
-
-You can configure these steps in a `.bashmanci.yml` at root.
+my-script/\
+├── bashman.json\
+├── bin/ # executables\
+│ └── myscript\
+├── lib/ # helpers\
+├── config/ # templates\
+├── install.sh # optional installer\
+└── uninstall.sh # optional uninstaller
 
 * * * * *
 
 Roadmap
 -------
 
-1.  **MVP**: local install/list/uninstall + package creation + single‑registry search.
+1.  Multi-tap support & remote registry
 
-2.  **Registries**: support multiple taps, JSON API, and web UI.
+2.  Search API for IDE/CI
 
-3.  **Security**: integrate CI hooks, sandboxing, and signing.
+3.  Web UI polish
 
-4.  **Ecosystem**: create official classifiers, badges, and GitHub Actions.
+4.  Security pipelines
+
+    -   Linting (ShellCheck, shfmt)
+
+    -   Sandbox execution (Docker)
+
+    -   AI-driven review (prototype)
+
+    -   GPG signing
+
+5.  Ecosystem tooling: badges, classifiers, GitHub Actions
+
+*Is "AI-driven review" too early? Without formal audits it may mislead users---consider renaming or delaying.*
 
 * * * * *
 
-Governance & Contribution
--------------------------
+Contributing
+------------
 
--   **Code of Conduct**: see `CODE_OF_CONDUCT.md`
+-   See CODE_OF_CONDUCT.md
 
--   **Security Policy**: see `SECURITY.md`
+-   See SECURITY.md
 
--   **Issue Tracker**: <https://gitlab.ellisbs.co.uk/ian/bashman/-/issues>
+-   Report issues and MRs at <https://gitlab.ellisbs.co.uk/ian/bashman/-/issues>
 
--   **Pull Requests**: fork, branch, test, and open a merge request. We review by label:
-
-    -   `good first issue`, `enhancement`, `security`, `documentation`
-
-Thanks for helping make Bashman the trusted package manager for Bash!
+We triage by labels: good first issue - enhancement - security - documentation
