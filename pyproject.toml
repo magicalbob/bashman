@@ -3,6 +3,7 @@ name = "bashman"
 version = "0.1.0"
 description = "Bare-bones Bashman MVP: FastAPI registry + CLI"
 authors = [{name="You", email="you@example.com"}]
+requires-python = ">=3.12"
 
 # Point at your markdown README in the project root:
 readme = "README.md"
@@ -15,4 +16,15 @@ dependencies = [
   "python-multipart",
   "typer",
   "httpx"
+]
+
+[project.optional-dependencies]
+dev = [
+  "fastapi",
+  "uvicorn[standard]",
+  "typer",
+  "httpx",
+  "pytest",
+  "pytest-cov",
+  "python-multipart"
 ]
