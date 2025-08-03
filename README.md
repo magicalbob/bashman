@@ -1,93 +1,97 @@
-# bashman
+### Bashman: The Package Manager for Bash Scripts
 
+**Bashman** is an ambitious project to create a decentralized, secure, and community-driven package manager for shell scripts. Just as `pip` manages Python packages and `apt` handles system software, Bashman aims to bring a professional level of versioning, dependency management, and security to the world of Bash scripting.
 
+* * * * *
 
-## Getting started
+### The Vision
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Shell scripts are a vital part of the developer's toolkit, but they are often shared informally through Gists, forums, or simple Git repositories. This leads to issues with versioning, discoverability, and, most importantly, security.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Bashman addresses this by introducing a standardized **Bashman Package Format** and a set of tools to manage these packages. The goal is to build a centralized, trusted registry---dubbed **Bashman Central**---that validates and hosts community-created scripts. However, Bashman is also designed to be **self-hostable**, allowing organizations to run their own private registries for internal tool sharing.
 
-## Add your files
+### Key Features
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+-   **Standardized Package Format**: A package is not just a single file. Bashman defines a structure for multi-file scripts, including binaries, configuration files, and documentation.
 
-```
-cd existing_repo
-git remote add origin http://gitlab.ellisbs.co.uk/ian/bashman.git
-git branch -M main
-git push -uf origin main
-```
+-   **Decentralized by Design**: While a public registry will be available, any user can host their own Bashman server, offering the same push/search/pull services.
 
-## Integrate with your tools
+-   **Robust Security Model**: To build trust in a world of executable code, every package pushed to a Bashman server is subjected to a multi-stage security process:
 
-- [ ] [Set up project integrations](http://gitlab.ellisbs.co.uk/ian/bashman/-/settings/integrations)
+    -   **Static Analysis**: Automated linting and code style checks with tools like `ShellCheck`.
 
-## Collaborate with your team
+    -   **Sandboxed Execution**: Scripts are run in an isolated Docker environment to monitor their behavior.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+    -   **LLM-Powered Review**: An AI layer analyzes the script's intent, system calls, and network activity to flag potential security risks.
 
-## Test and Deploy
+-   **Git-Centric Workflow**: Bashman leverages Git for versioning and distribution. A package's source code remains on Git, with the Bashman registry acting as a trusted index.
 
-Use the built-in continuous integration in GitLab.
+### Proposed CLI Commands
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Bashman will offer a clean and intuitive command-line interface, separating the experience for end-users and package authors.
 
-***
+#### For the End-User:
 
-# Editing this README
+-   `bashman init`: Initializes the local Bashman workspace, setting up a directory structure and configuring the user's shell environment.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+-   `bashman install <package-name>`: Installs a package from a Bashman registry.
 
-## Suggestions for a good README
+-   `bashman list`: Lists all packages currently installed on the local system.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+-   `bashman uninstall <package-name>`: Removes an installed package.
 
-## Name
-Choose a self-explaining name for your project.
+-   `bashman search <term>`: Searches the Bashman registry for available packages.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+#### For the Package Author:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+-   `bashman create <package-name>`: Scaffolds a new Bashman package with the correct directory structure and manifest file.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+-   `bashman publish`: Submits a new version of a package to a Bashman server for validation and inclusion in the registry.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+### The Bashman Package Format
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+A Bashman package is a directory containing the following:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+-   **`bashman.json`**: The manifest file that defines the package's metadata and instructions.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+-   **`bin/`**: (Required) Executable scripts that will be placed in the user's `$PATH`.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+-   **`config/`**: (Optional) Default configuration files for the script.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+-   **`lib/`**: (Optional) Helper scripts, libraries, or other non-executable code.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+-   **`install.sh`**: (Optional) A script for custom installation logic.
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+-   **`uninstall.sh`**: (Optional) A script for custom uninstallation logic.
 
-## License
-For open source projects, say how it is licensed.
+### Tentative Roadmap
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+**Phase 1: The Core CLI (Local-First)**
+
+-   Implement the `bashman init`, `install`, `list`, and `uninstall` commands.
+
+-   Focus on local functionality: `bashman install` will initially work by cloning a Git repository directly.
+
+-   Develop the `bashman create` command to establish the package format.
+
+**Phase 2: The Self-Hostable Server**
+
+-   Build the server-side component of Bashman.
+
+-   Implement the `bashman publish` command, allowing packages to be pushed to a server.
+
+-   Implement the core search/pull services. This will allow for private, in-house registries.
+
+**Phase 3: The Public Registry & Advanced Security**
+
+-   Integrate the security validation features: static analysis, Docker sandboxing, and LLM-powered review.
+
+-   Launch **Bashman Central**, a public, curated registry of community-contributed Bash packages.
+
+-   Add features for dependency management and version resolution.
+
+* * * * *
+
+### How to Contribute
+
+Bashman is an open-source project and welcomes contributions from the community. If you are passionate about shell scripting and package management, we would love for you to get involved. Check out the [issues page](https://gitlab.ellisbs.co.uk/ian/bashman/-/issues) for ways to help, or visit the main repository at <https://gitlab.ellisbs.co.uk/ian/bashman>.
