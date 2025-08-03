@@ -1,97 +1,202 @@
-### Bashman: The Package Manager for Bash Scripts
+Bashman: The Package Manager for Bash Scripts
+=============================================
 
-**Bashman** is an ambitious project to create a decentralized, secure, and community-driven package manager for shell scripts. Just as `pip` manages Python packages and `apt` handles system software, Bashman aims to bring a professional level of versioning, dependency management, and security to the world of Bash scripting.
-
-* * * * *
-
-### The Vision
-
-Shell scripts are a vital part of the developer's toolkit, but they are often shared informally through Gists, forums, or simple Git repositories. This leads to issues with versioning, discoverability, and, most importantly, security.
-
-Bashman addresses this by introducing a standardized **Bashman Package Format** and a set of tools to manage these packages. The goal is to build a centralized, trusted registry---dubbed **Bashman Central**---that validates and hosts community-created scripts. However, Bashman is also designed to be **self-hostable**, allowing organizations to run their own private registries for internal tool sharing.
-
-### Key Features
-
--   **Standardized Package Format**: A package is not just a single file. Bashman defines a structure for multi-file scripts, including binaries, configuration files, and documentation.
-
--   **Decentralized by Design**: While a public registry will be available, any user can host their own Bashman server, offering the same push/search/pull services.
-
--   **Robust Security Model**: To build trust in a world of executable code, every package pushed to a Bashman server is subjected to a multi-stage security process:
-
-    -   **Static Analysis**: Automated linting and code style checks with tools like `ShellCheck`.
-
-    -   **Sandboxed Execution**: Scripts are run in an isolated Docker environment to monitor their behavior.
-
-    -   **LLM-Powered Review**: An AI layer analyzes the script's intent, system calls, and network activity to flag potential security risks.
-
--   **Git-Centric Workflow**: Bashman leverages Git for versioning and distribution. A package's source code remains on Git, with the Bashman registry acting as a trusted index.
-
-### Proposed CLI Commands
-
-Bashman will offer a clean and intuitive command-line interface, separating the experience for end-users and package authors.
-
-#### For the End-User:
-
--   `bashman init`: Initializes the local Bashman workspace, setting up a directory structure and configuring the user's shell environment.
-
--   `bashman install <package-name>`: Installs a package from a Bashman registry.
-
--   `bashman list`: Lists all packages currently installed on the local system.
-
--   `bashman uninstall <package-name>`: Removes an installed package.
-
--   `bashman search <term>`: Searches the Bashman registry for available packages.
-
-#### For the Package Author:
-
--   `bashman create <package-name>`: Scaffolds a new Bashman package with the correct directory structure and manifest file.
-
--   `bashman publish`: Submits a new version of a package to a Bashman server for validation and inclusion in the registry.
-
-### The Bashman Package Format
-
-A Bashman package is a directory containing the following:
-
--   **`bashman.json`**: The manifest file that defines the package's metadata and instructions.
-
--   **`bin/`**: (Required) Executable scripts that will be placed in the user's `$PATH`.
-
--   **`config/`**: (Optional) Default configuration files for the script.
-
--   **`lib/`**: (Optional) Helper scripts, libraries, or other non-executable code.
-
--   **`install.sh`**: (Optional) A script for custom installation logic.
-
--   **`uninstall.sh`**: (Optional) A script for custom uninstallation logic.
-
-### Tentative Roadmap
-
-**Phase 1: The Core CLI (Local-First)**
-
--   Implement the `bashman init`, `install`, `list`, and `uninstall` commands.
-
--   Focus on local functionality: `bashman install` will initially work by cloning a Git repository directly.
-
--   Develop the `bashman create` command to establish the package format.
-
-**Phase 2: The Self-Hostable Server**
-
--   Build the server-side component of Bashman.
-
--   Implement the `bashman publish` command, allowing packages to be pushed to a server.
-
--   Implement the core search/pull services. This will allow for private, in-house registries.
-
-**Phase 3: The Public Registry & Advanced Security**
-
--   Integrate the security validation features: static analysis, Docker sandboxing, and LLM-powered review.
-
--   Launch **Bashman Central**, a public, curated registry of community-contributed Bash packages.
-
--   Add features for dependency management and version resolution.
+**Bashman** brings a PyPI‑like experience to shell scripting: discover, install, and share Bash packages with full versioning, metadata, security scanning, and a unified registry model.
 
 * * * * *
 
-### How to Contribute
+Table of Contents
+-----------------
 
-Bashman is an open-source project and welcomes contributions from the community. If you are passionate about shell scripting and package management, we would love for you to get involved. Check out the [issues page](https://gitlab.ellisbs.co.uk/ian/bashman/-/issues) for ways to help, or visit the main repository at <https://gitlab.ellisbs.co.uk/ian/bashman>.
+1.  [Why Bashman?](https://gitlab.ellisbs.co.uk#why-bashman)
+
+2.  [Key Concepts](https://gitlab.ellisbs.co.uk#key-concepts)
+
+3.  [Package Format](https://gitlab.ellisbs.co.uk#package-format)
+
+4.  [CLI Reference](https://gitlab.ellisbs.co.uk#cli-reference)
+
+5.  [Registry & Discovery](https://gitlab.ellisbs.co.uk#registry--discovery)
+
+6.  [Security Model](https://gitlab.ellisbs.co.uk#security-model)
+
+7.  [Roadmap](https://gitlab.ellisbs.co.uk#roadmap)
+
+8.  [Governance & Contribution](https://gitlab.ellisbs.co.uk#governance--contribution)
+
+* * * * *
+
+Why Bashman?
+------------
+
+-   **Formalize Your Scripts**: Move from ad‑hoc Gists or repos to a standardized package with metadata, versioning, and dependency declarations.
+
+-   **Discoverability**: Browse, filter, and search by keywords, categories, or popularity---both on the web and via the CLI.
+
+-   **Reproducible Installs**: Pin versions, resolve dependencies (e.g. `jq`, `curl`), and track exact install procedures.
+
+-   **Security by Design**: Optional, pluggable pipelines for linting, sandboxed execution, and AI‑assisted review.
+
+* * * * *
+
+Key Concepts
+------------
+
+-   **Package**: A directory with a `bashman.json` manifest + subdirectories (`bin/`, `lib/`, etc.).
+
+-   **Registry**: A CouchDB‑style index of packages (public or private). Provides search, metadata, and version resolution.
+
+-   **Tap**: A user‑hosted registry (self‑hostable) that can be added with `bashman tap add <name> <url>`.
+
+* * * * *
+
+Package Format
+--------------
+
+Every Bashman package must include a **`bashman.json`** manifest at its root.
+
+```
+{
+  "name": "myscript",                // unique identifier (kebab-case)
+  "version": "1.2.3",               // semantic version
+  "description": "Short summary.",
+  "homepage": "https://...",          // project URL
+  "repository": "https://...",        // Git repo
+  "license": "MIT",
+  "keywords": ["networking","cli"],
+  "classifiers": [                    // free‑form or from a registry taxonomy
+    "Topic :: System :: Monitoring",
+    "Environment :: Console"
+  ],
+  "dependencies": {                   // external binaries or other bashman packages
+    "jq": ">=1.6",
+    "bash-utils": "^0.5"
+  },
+  "platforms": ["linux","macos"],
+  "shell": ">=4.4"
+}
+
+```
+
+Directory structure:
+
+```
+my-script/
+├── bashman.json
+├── bin/           # executables that go into $PATH
+│   └── myscript
+├── lib/           # helper scripts
+├── config/        # default config templates
+├── install.sh     # optional custom installer
+└── uninstall.sh   # optional custom uninstaller
+
+```
+
+* * * * *
+
+CLI Reference
+-------------
+
+### Global Commands
+
+```
+# Initialize your workspace (~/.bashman)
+bashman init
+
+# Add or remove registries (taps)
+bashman tap add   <name> <url>
+bashman tap remove <name>
+
+# List all taps
+tbashman tap list
+
+```
+
+### End‑User Commands
+
+```
+# Discover
+bashman search <term> [--classifiers=... --keywords=...]  # full-text + filter
+bashman trending [--period=weekly|monthly]               # most-installed recently
+bashman new      [--period=weekly|monthly]               # latest published
+
+# Install & Manageashman install   <package>[@<version>]   # default latest
+bashman upgrade   <package>[@<version>]   # bump one or all
+bashman list                                # show installed
+bashman uninstall <package>                 # remove
+bashman info     <package>                 # metadata dump
+
+```
+
+### Author Commands
+
+```
+bashman create <package>        # scaffold directory + bashman.jsonashman publish [--tap=<name>]  # push to registry + validation pipeline
+bashman version bump [major|minor|patch]
+
+```
+
+* * * * *
+
+Registry & Discovery
+--------------------
+
+1.  **Public Registry** at `registry.bashman.sh` (curated, security‑scored, official packages).
+
+2.  **User Taps** -- self‑hosted CouchDB instances or simple static JSON indexes.
+
+3.  **Search API** -- JSON endpoint for external tooling (IDEs, CI badges):
+
+    ```
+    GET /api/v1/search?q=backup&classifiers=Security&sort=downloads
+
+    ```
+
+4.  **Website** -- browse by category, filter by shell version, license, platform, or security score.
+
+* * * * *
+
+Security Model
+--------------
+
+Bashman's security pipeline is **opt‑in**. You choose which validators to run on `publish`:
+
+1.  **Lint & Style** (`shellcheck`, `shfmt`)
+
+2.  **Sandboxed Execution** (Docker sandbox + resource limits)
+
+3.  **AI‑Assisted Review** (LLM checks for suspicious patterns)
+
+4.  **Digital Signatures** (GPG signing of tarballs)
+
+You can configure these steps in a `.bashmanci.yml` at root.
+
+* * * * *
+
+Roadmap
+-------
+
+1.  **MVP**: local install/list/uninstall + package creation + single‑registry search.
+
+2.  **Registries**: support multiple taps, JSON API, and web UI.
+
+3.  **Security**: integrate CI hooks, sandboxing, and signing.
+
+4.  **Ecosystem**: create official classifiers, badges, and GitHub Actions.
+
+* * * * *
+
+Governance & Contribution
+-------------------------
+
+-   **Code of Conduct**: see `CODE_OF_CONDUCT.md`
+
+-   **Security Policy**: see `SECURITY.md`
+
+-   **Issue Tracker**: <https://gitlab.ellisbs.co.uk/ian/bashman/-/issues>
+
+-   **Pull Requests**: fork, branch, test, and open a merge request. We review by label:
+
+    -   `good first issue`, `enhancement`, `security`, `documentation`
+
+Thanks for helping make Bashman the trusted package manager for Bash!
