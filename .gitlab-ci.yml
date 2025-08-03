@@ -1,10 +1,12 @@
 default:
   tags:
     - linux
+  image: docker.ellisbs.co.uk:5190/ubuntu:24.04
 
 stages:
   - test
   - scan
+  - build
 
 variables:
   SONAR_SCANNER_VERSION: 5.0.1.3006
@@ -41,7 +43,6 @@ run_tests:
   coverage: '/^TOTAL.+?(\d+\%)$/'
 
 sonar_scan:
-  image: docker.ellisbs.co.uk:5190/ubuntu:24.04
   stage: scan
   script:
     - echo "Checking for coverage artifacts..."
@@ -53,3 +54,19 @@ sonar_scan:
     - ~/sonar-scanner-${SONAR_SCANNER_VERSION}/bin/sonar-scanner -Dsonar.token=$SONAR_TOKEN -Dsonar.python.coverage.reportPaths=coverage.xml
   dependencies:
     - run_tests
+
+build:
+  stage: build
+  tags:
+    - linux
+  script:
+    - python3 -m venv /tmp/venv
+    - source /tmp/venv/bin/activate
+    - pip install -e ".[dev]"
+    - python3 -m build
+  artifacts:
+    paths:
+      - dist/*.tar.gz
+      - dist/*.whl
+  needs:
+    - sonar_scan
