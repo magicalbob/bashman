@@ -27,7 +27,8 @@ dev = [
   "build>=0.10.0",
   "pytest",
   "pytest-cov",
-  "python-multipart"
+  "python-multipart",
+  "twine>=4.0.0"
 ]
 
 [tool.pytest.ini_options]
