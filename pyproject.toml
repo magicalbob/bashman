@@ -20,6 +20,19 @@ python-multipart = "*"
 typer = "^0.16"
 httpx = "*"
 
+[project.optional-dependencies]
+dev = [
+  "fastapi",
+  "uvicorn[standard]",
+  "typer",
+  "httpx",
+  "build>=0.10.0",
+  "pytest",
+  "pytest-cov",
+  "python-multipart",
+  "twine>=4.0.0"
+]
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
 pytest-cov = "^6.0"
