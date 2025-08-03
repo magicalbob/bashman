@@ -24,6 +24,7 @@ dev = [
   "uvicorn[standard]",
   "typer",
   "httpx",
+  "build>=0.10.0",
   "pytest",
   "pytest-cov",
   "python-multipart"
