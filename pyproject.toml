@@ -1,3 +1,5 @@
+# pyproject.toml
+
 [tool.poetry]
 name = "bashman"
 version = "0.1.0"
@@ -6,7 +8,7 @@ authors = ["You <you@example.com>"]
 readme = "README.md"
 license = "MIT"
 
-# Tell Poetry to include the code under src/bashman
+# Tell Poetry where to find your package
 packages = [
   { include = "bashman", from = "src" }
 ]
@@ -20,22 +22,14 @@ python-multipart = "*"
 typer = "^0.16"
 httpx = "*"
 
-[project.optional-dependencies]
-dev = [
-  "fastapi",
-  "uvicorn[standard]",
-  "typer",
-  "httpx",
-  "build>=0.10.0",
-  "pytest",
-  "pytest-cov",
-  "python-multipart",
-  "twine>=4.0.0"
-]
-
-[tool.poetry.group.dev.dependencies]
+# Legacy dev-dependencies that poetry-core still supports
+[tool.poetry.dev-dependencies]
 pytest = "^8.0"
 pytest-cov = "^6.0"
+
+# Allow pip install -e ".[dev]" to pull in test tooling
+[tool.poetry.extras]
+dev = ["pytest", "pytest-cov"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
