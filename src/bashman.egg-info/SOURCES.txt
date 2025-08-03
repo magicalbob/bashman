@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/bashman/cli.py
+src/bashman.egg-info/PKG-INFO
+src/bashman.egg-info/SOURCES.txt
+src/bashman.egg-info/dependency_links.txt
+src/bashman.egg-info/requires.txt
+src/bashman.egg-info/top_level.txt
+src/bashman/server/app.py
+src/bashman/server/models.py

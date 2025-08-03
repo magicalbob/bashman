@@ -1,0 +1,6 @@
+from pydantic import BaseModel
+
+class Package(BaseModel):
+    name: str
+    version: str
+    description: str
