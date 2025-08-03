@@ -8,21 +8,21 @@ Bashman: The Package Manager for Bash Scripts
 Table of Contents
 -----------------
 
-1.  [Why Bashman?](https://gitlab.ellisbs.co.uk/ian/bashman#why-bashman:~:text=Governance%20%26%20Contribution-,Why%20Bashman,-%3)
+1.  [Why Bashman?](https://gitlab.ellisbs.co.uk/ian/bashman#why-bashman)
 
-2.  [Key Concepts](https://gitlab.ellisbs.co.uk#key-concepts)
+2.  [Key Concepts](https://gitlab.ellisbs.co.uk/ian/bashman#key-concepts)
 
-3.  [Package Format](https://gitlab.ellisbs.co.uk#package-format)
+3.  [Package Format](https://gitlab.ellisbs.co.uk/ian/bashman#package-format)
 
-4.  [CLI Reference](https://gitlab.ellisbs.co.uk#cli-reference)
+4.  [CLI Reference](https://gitlab.ellisbs.co.uk/ian/bashman#cli-reference)
 
-5.  [Registry & Discovery](https://gitlab.ellisbs.co.uk#registry--discovery)
+5.  [Registry & Discovery](https://gitlab.ellisbs.co.uk/ian/bashman#registry--discovery)
 
-6.  [Security Model](https://gitlab.ellisbs.co.uk#security-model)
+6.  [Security Model](https://gitlab.ellisbs.co.uk/ian/bashman#security-model)
 
-7.  [Roadmap](https://gitlab.ellisbs.co.uk#roadmap)
+7.  [Roadmap](https://gitlab.ellisbs.co.uk/ian/bashman#roadmap)
 
-8.  [Governance & Contribution](https://gitlab.ellisbs.co.uk#governance--contribution)
+8.  [Governance & Contribution](https://gitlab.ellisbs.co.uk/ian/bashman#governance--contribution)
 
 * * * * *
 
