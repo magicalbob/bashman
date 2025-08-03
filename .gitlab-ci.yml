@@ -13,6 +13,7 @@ stages:
 variables:
   SONAR_SCANNER_VERSION: 5.0.1.3006
   IMAGE_NAME: docker.ellisbs.co.uk:7070/bashman:latest
+  DOCKER_USERNAME: docker
 
 cache:
   paths:
