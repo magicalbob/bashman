@@ -29,7 +29,7 @@ pytest-cov = "^6.0"
 
 # Allow pip install -e ".[dev]" to pull in test tooling
 [tool.poetry.extras]
-dev = ["pytest", "pytest-cov"]
+dev = ["build", "pytest", "pytest-cov"]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
