@@ -4,6 +4,7 @@ src/bashman/server/__pycache__
 src/bashman.egg-info
 .coverage
 coverage.xml
+tests/__pycache__
 
 # chunkwrap workfile
 .chunkwrap_state
