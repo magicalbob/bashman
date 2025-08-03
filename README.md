@@ -8,7 +8,7 @@ Bashman: The Package Manager for Bash Scripts
 Table of Contents
 -----------------
 
-1.  [Why Bashman?](https://gitlab.ellisbs.co.uk#why-bashman)
+1.  [Why Bashman?](https://gitlab.ellisbs.co.uk/ian/bashman#why-bashman:~:text=Governance%20%26%20Contribution-,Why%20Bashman,-%3)
 
 2.  [Key Concepts](https://gitlab.ellisbs.co.uk#key-concepts)
 
