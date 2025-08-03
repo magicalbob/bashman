@@ -1,65 +1,29 @@
-[project]
+[tool.poetry]
 name = "bashman"
 version = "0.1.0"
 description = "Bare-bones Bashman MVP: FastAPI registry + CLI"
-authors = [{name="You", email="you@example.com"}]
-requires-python = ">=3.12"
-
-# Point at your markdown README in the project root:
+authors = ["You <you@example.com>"]
 readme = "README.md"
+license = "MIT"
 
-license = {text = "MIT"}
-dependencies = [
-  "fastapi",
-  "uvicorn[standard]",
-  "jinja2",
-  "python-multipart",
-  "typer",
-  "httpx"
+# Tell Poetry to include the code under src/bashman
+packages = [
+  { include = "bashman", from = "src" }
 ]
 
-[project.optional-dependencies]
-dev = [
-  "fastapi",
-  "uvicorn[standard]",
-  "typer",
-  "httpx",
-  "build>=0.10.0",
-  "pytest",
-  "pytest-cov",
-  "python-multipart",
-  "twine>=4.0.0"
-]
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.116"
+uvicorn = { extras = ["standard"], version = "^0.35" }
+jinja2 = "^3.1"
+python-multipart = "*"
+typer = "^0.16"
+httpx = "*"
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--cov=src/bashman",
-    "--cov-report=html",
-    "--cov-report=term-missing",
-    "--cov-report=xml",
-    "--cov-fail-under=85"
-]
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-cov = "^6.0"
 
-[tool.coverage.run]
-source = ["src/bashman"]
-omit = [
-    "*/tests/*",
-    "*/venv/*",
-    "*/__pycache__/*"
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if 0:",
-    "if __name__ == .__main__.:"
-]
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
