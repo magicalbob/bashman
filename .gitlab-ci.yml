@@ -13,7 +13,6 @@ cache:
 run_tests:
   image: docker.ellisbs.co.uk:5190/python:3.12
   stage: test
-  needs: ["test_base_install", "test_dev_install"]
   before_script:
     - python -m venv venv
     - source venv/bin/activate
