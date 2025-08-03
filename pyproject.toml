@@ -12,6 +12,7 @@ dependencies = [
   "fastapi",
   "uvicorn[standard]",
   "jinja2",
+  "python-multipart",
   "typer",
   "httpx"
 ]
