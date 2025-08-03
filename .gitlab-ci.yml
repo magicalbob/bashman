@@ -9,6 +9,7 @@ stages:
   - build
   - publish
   - build_docker
+  - deploy
 
 variables:
   SONAR_SCANNER_VERSION: 5.0.1.3006
@@ -105,3 +106,16 @@ build_docker:
     - echo "$DOCKER_PASSWORD" | docker login docker.ellisbs.co.uk:7070 -u "$DOCKER_USERNAME" --password-stdin
     - docker build -t $IMAGE_NAME .
     - docker push $IMAGE_NAME
+
+deploy_resillientic:
+  image: docker.ellisbs.co.uk:5190/docker:24
+  stage: deploy
+  script:
+    - echo "Deploying Resillientic app container..."
+    - export DOCKER_HOST=unix:///root/run/docker-host.sock
+    - docker stop bashman-app || true
+    - docker rm bashman-app || true
+    - docker run -d --name bashman-app -p 8000:8000 --restart unless-stopped $IMAGE_NAME
+    - echo "Waiting for app to become available..."
+    - sleep 5
+    - wget -q http://192.168.0.2:8000/health && cat health || (echo "Deployment failed"; exit 1)
