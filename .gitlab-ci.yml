@@ -4,6 +4,10 @@ default:
 
 stages:
   - test
+  - scan
+
+variables:
+  SONAR_SCANNER_VERSION: 5.0.1.3006
 
 cache:
   paths:
@@ -35,3 +39,17 @@ run_tests:
       - coverage.xml
     expire_in: 1 week
   coverage: '/^TOTAL.+?(\d+\%)$/'
+
+sonar_scan:
+  image: docker.ellisbs.co.uk:5190/ubuntu:24.04
+  stage: scan
+  script:
+    - echo "Checking for coverage artifacts..."
+    - ls -la coverage.xml || echo "coverage.xml not found in sonar_scan job"
+    - pushd ~
+    - curl -o /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}.zip
+    - unzip -n /tmp/sonar-scanner.zip
+    - popd
+    - ~/sonar-scanner-${SONAR_SCANNER_VERSION}/bin/sonar-scanner -Dsonar.token=$SONAR_TOKEN -Dsonar.python.coverage.reportPaths=coverage.xml
+  dependencies:
+    - run_tests
