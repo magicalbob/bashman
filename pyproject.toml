@@ -22,14 +22,14 @@ python-multipart = "*"
 typer = "^0.16"
 httpx = "*"
 
-# Legacy dev-dependencies that poetry-core still supports
-[tool.poetry.dev-dependencies]
+# Updated dev dependencies using the new group syntax
+[tool.poetry.group.dev.dependencies]
 build = "^0.10.0"
 pytest = "^8.0"
 pytest-cov = "^6.0"
 twine = "^6.1.0"
 
-# Allow pip install -e ".[dev]" to pull in test tooling
+# Allow pip install -e ".[dev]" to pull in test tooling (kept for compatibility)
 [tool.poetry.extras]
 dev = ["build", "pytest", "pytest-cov"]
 

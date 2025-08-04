@@ -1,121 +1,94 @@
-default:
-  tags:
-    - linux
-  image: docker.ellisbs.co.uk:5190/ubuntu:24.04
-
 stages:
   - test
-  - scan
   - build
-  - publish
-  - build_docker
   - deploy
 
 variables:
-  SONAR_SCANNER_VERSION: 5.0.1.3006
-  IMAGE_NAME: docker.ellisbs.co.uk:7070/bashman:latest
-  DOCKER_USERNAME: docker
+  DOCKER_DRIVER: overlay2
+  POETRY_CACHE_DIR: $CI_PROJECT_DIR/.poetry-cache
+  POETRY_VENV_IN_PROJECT: "true"
 
+# Cache Poetry dependencies between jobs
 cache:
   paths:
-    - .cache/pip/
-    - venv/
+    - .poetry-cache/
+    - .venv/
 
-run_tests:
-  image: docker.ellisbs.co.uk:5190/python:3.12
+# Test stage
+test:
   stage: test
+  image: python:3.12-slim
   before_script:
-    - python -m venv venv
-    - source venv/bin/activate
-    - python -m pip install --upgrade pip
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
+    - pip install poetry
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
   script:
-    - echo "Installing package with dev dependencies..."
-    - pip install -e .[dev]
-    - echo "Running tests with pytest..."
-    - python3 -m pytest
-    - echo "✅ All tests passed"
-    - echo "Coverage file location:"
-    - ls -la coverage.xml || echo "coverage.xml not found"
+    - poetry run pytest tests/ --cov=src/bashman --cov-report=xml
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
   artifacts:
     reports:
       coverage_report:
         coverage_format: cobertura
         path: coverage.xml
-    paths:
-      - htmlcov/
-      - coverage.xml
     expire_in: 1 week
-  coverage: '/^TOTAL.+?(\d+\%)$/'
 
-sonar_scan:
-  stage: scan
-  script:
-    - echo "Checking for coverage artifacts..."
-    - ls -la coverage.xml || echo "coverage.xml not found in sonar_scan job"
-    - pushd ~
-    - curl -o /tmp/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}.zip
-    - unzip -n /tmp/sonar-scanner.zip
-    - popd
-    - ~/sonar-scanner-${SONAR_SCANNER_VERSION}/bin/sonar-scanner -Dsonar.token=$SONAR_TOKEN -Dsonar.python.coverage.reportPaths=coverage.xml
-  dependencies:
-    - run_tests
-
+# Build stage
 build:
   stage: build
+  image: python:3.12-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential
+    - pip install poetry
+    - poetry config virtualenvs.in-project true
+    - poetry install --with dev
   script:
-    - python3 -m venv /tmp/venv
-    - source /tmp/venv/bin/activate
-    - pip install -e ".[dev]"
-    - python3 -m build
+    - poetry build
+    - ls -la dist/
   artifacts:
     paths:
-      - dist/*.tar.gz
-      - dist/*.whl
-  needs:
-    - sonar_scan
+      - dist/
+    expire_in: 1 week
 
-publish:
-  stage: publish
-  script:
-    - python3 -m venv /tmp/venv
-    - source /tmp/venv/bin/activate
-    - pip install -e ".[dev]"
-    - |
-      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
-        echo "🚀 Publishing to Nexus (main branch)"
-        twine upload --repository-url https://nexus.ellisbs.co.uk/repository/pypi-hosted/ --username admin --password $PYPI_PASSWORD dist/*
-      else
-        echo "🔍 Rehearsing publish (branch: $CI_COMMIT_REF_NAME)"
-        twine check dist/*
-        echo "✅ Package would be valid for publishing"
-        echo "📦 Files that would be uploaded:"
-        ls -la dist/
-        echo "🎭 Rehearsal complete - no actual upload performed"
-      fi
-  dependencies:
-    - build
-
-build_docker:
-  image: docker.ellisbs.co.uk:5190/docker:24
-  stage: build_docker
+# Docker build stage
+docker-build:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
-    - echo "192.168.0.2 docker.ellisbs.co.uk" >> /etc/hosts
-    - export DOCKER_HOST=unix:///root/run/docker-host.sock
-    - echo "$DOCKER_PASSWORD" | docker login docker.ellisbs.co.uk:7070 -u "$DOCKER_USERNAME" --password-stdin
-    - docker build -t $IMAGE_NAME .
-    - docker push $IMAGE_NAME
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker build -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - develop
 
-deploy_bashman:
-  image: docker.ellisbs.co.uk:5190/docker:24
+# Deploy to test environment
+deploy-test:
   stage: deploy
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
   script:
-    - echo "Deploying Bashman app container..."
-    - export DOCKER_HOST=unix:///root/run/docker-host.sock
-    - docker stop bashman-app || true
-    - docker rm bashman-app || true
-    - docker run -d --name bashman-app -p 8000:8000 --restart unless-stopped $IMAGE_NAME
-    - echo "Waiting for app to become available..."
-    - sleep 5
-    - wget -q http://192.168.0.2:8000/health && cat health || (echo "Deployment failed"; exit 1)
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker stop bashman-test || true
+    - docker rm bashman-test || true
+    - docker run -d --name bashman-test -p 8000:8000 $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - echo "Test deployment available at http://your-test-server:8000"
+  environment:
+    name: test
+    url: http://your-test-server:8000
+  only:
+    - main
+    - develop
+  when: manual

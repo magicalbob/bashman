@@ -5,6 +5,8 @@ src/bashman.egg-info
 .coverage
 coverage.xml
 tests/__pycache__
+dist/
+poetry.lock
 
 # chunkwrap workfile
 .chunkwrap_state
