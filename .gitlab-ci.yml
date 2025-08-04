@@ -113,9 +113,11 @@ build_docker:
 deploy_bashman:
   image: docker.ellisbs.co.uk:5190/docker:24
   stage: deploy
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "unix:///root/run/docker-host.sock"
   script:
     - echo "Deploying Bashman app container..."
-    - export DOCKER_HOST=unix:///root/run/docker-host.sock
     - docker stop bashman-app || true
     - docker rm bashman-app || true
     - docker run -d --name bashman-app -p 8000:8000 --restart unless-stopped $IMAGE_NAME
