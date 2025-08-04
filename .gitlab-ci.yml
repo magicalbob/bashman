@@ -123,4 +123,4 @@ deploy_bashman:
     - docker run -d --name bashman-app -p 8000:8000 --restart unless-stopped $IMAGE_NAME
     - echo "Waiting for app to become available..."
     - sleep 5
-    - wget -q http://192.168.0.2:8000/health && cat health || (echo "Deployment failed"; exit 1)
+    - wget -q http://192.168.0.2:8000/scripts || (echo "Deployment failed"; exit 1)
