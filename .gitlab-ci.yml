@@ -103,9 +103,9 @@ build_docker:
   stage: build_docker
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "unix:///root/run/docker-host.sock"
   script:
     - echo "192.168.0.2 docker.ellisbs.co.uk" >> /etc/hosts
-    - export DOCKER_HOST=unix:///root/run/docker-host.sock
     - echo "$DOCKER_PASSWORD" | docker login docker.ellisbs.co.uk:7070 -u "$DOCKER_USERNAME" --password-stdin
     - docker build -t $IMAGE_NAME .
     - docker push $IMAGE_NAME
