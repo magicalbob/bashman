@@ -24,8 +24,10 @@ httpx = "*"
 
 # Legacy dev-dependencies that poetry-core still supports
 [tool.poetry.dev-dependencies]
+build = "^0.10.0"
 pytest = "^8.0"
 pytest-cov = "^6.0"
+twine = "^6.1.0"
 
 # Allow pip install -e ".[dev]" to pull in test tooling
 [tool.poetry.extras]
