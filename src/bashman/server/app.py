@@ -1,27 +1,49 @@
+# src/bashman/server/app.py
+
 import os
+import re
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# ←— ensure this is at top level so tests can monkey-patch it
 QUARANTINE_DIR = os.path.join(os.getcwd(), "quarantine")
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
 
+# Accept shebangs pointing at sh, bash, zsh, csh (with or without /usr/bin/env)
+SHELL_REGEX = re.compile(r"^#!\s*/(?:usr/bin/env\s+)?(sh|bash|zsh|csh)\b")
+
 @app.get("/scripts")
 async def list_scripts():
-    files = [f for f in os.listdir(QUARANTINE_DIR) if f.endswith(".sh")]
-    return JSONResponse(content=files)
+    valid = []
+    for fname in os.listdir(QUARANTINE_DIR):
+        path = os.path.join(QUARANTINE_DIR, fname)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as f:
+            first = f.readline().decode(errors="ignore")
+        if SHELL_REGEX.match(first):
+            valid.append(fname)
+    return JSONResponse(content=valid)
 
 @app.post("/scripts")
 async def upload_script(file: UploadFile = File(...)):
-    if not file.filename.endswith(".sh"):
-        raise HTTPException(400, "Only .sh files are allowed")
+    # Read up to 1 KiB to grab the first line
+    snippet = await file.read(1024)
+    first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
+    if not SHELL_REGEX.match(first_line):
+        raise HTTPException(
+            status_code=400,
+            detail="Script must begin with a shell shebang (e.g. #!/usr/bin/env bash)"
+        )
+
+    # Reset and save
+    await file.seek(0)
     dest = os.path.join(QUARANTINE_DIR, file.filename)
     if os.path.exists(dest):
         raise HTTPException(409, f"{file.filename} already exists")
     contents = await file.read()
-    with open(dest, "wb") as f:
-        f.write(contents)
-    return {"status": "quarantined", "filename": file.filename}
+    with open(dest, "wb") as out:
+        out.write(contents)
 
+    return {"status": "quarantined", "filename": file.filename}
