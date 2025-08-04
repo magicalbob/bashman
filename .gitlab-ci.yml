@@ -28,9 +28,10 @@ run_tests:
     - python -m venv venv
     - source venv/bin/activate
     - python -m pip install --upgrade pip
+    - pip install poetry
   script:
     - echo "Installing package with dev dependencies..."
-    - pip install -e .[dev]
+    - poetry install --with dev
     - echo "Running tests with pytest..."
     - pytest
     - echo "✅ All tests passed"
@@ -80,7 +81,8 @@ publish:
   script:
     - python3 -m venv /tmp/venv
     - source /tmp/venv/bin/activate
-    - pip install -e ".[dev]"
+    - pip install poetry
+    - poetry install --with dev
     - |
       if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
         echo "🚀 Publishing to Nexus (main branch)"
