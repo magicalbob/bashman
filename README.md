@@ -141,25 +141,31 @@ my-script/\
 Roadmap
 -------
 
-1.  Multi-tap support & remote registry
+### Phase 1: Core Infrastructure
+1. **Database abstraction layer** - SQLite backend with modular interface for future database options
+2. **API key-based identity system** - `bashman init` generates persistent user identity without personal data
+3. **Enhanced metadata storage** - automatic timestamps, author tracking, package descriptions
+4. **Time-based versioning** - monotonic version numbering with optional semantic tagging
 
-2.  Search API for IDE/CI
+### Phase 2: User Experience
+5. **Multi-tap support** - connect to remote registries beyond local-only
+6. **Search API** - programmatic search for IDE/CI integrations  
+7. **Web UI enhancements** - improved package browsing and discovery
+8. **Package management** - proper install/uninstall workflows with dependency tracking
 
-3.  Web UI polish
+### Phase 3: Security & Quality
+9. **Security pipeline foundation** - quarantine → scan → publish workflow
+10. **Basic linting integration** - ShellCheck and shfmt validation
+11. **Sandbox execution** - Docker-based script testing and validation
+12. **Package signing** - GPG-based package integrity verification
 
-4.  Security pipelines
+### Phase 4: Ecosystem
+13. **Functional testing suite** - Selenium-based end-to-end workflow testing
+14. **Advanced features** - badges, classifiers, trending packages
+15. **CI/CD integrations** - GitHub Actions, GitLab CI templates
+16. **Advanced security** - AI-assisted review (when mature enough to avoid false confidence)
 
-    -   Linting (ShellCheck, shfmt)
-
-    -   Sandbox execution (Docker)
-
-    -   AI-driven review (prototype)
-
-    -   GPG signing
-
-5.  Ecosystem tooling: badges, classifiers, GitHub Actions
-
-*Is "AI-driven review" too early? Without formal audits it may mislead users---consider renaming or delaying.*
+**Current Status:** Phase 1 ready to begin. Complete CI/CD pipeline operational with unit testing, quality scanning, artifact publishing, and containerized deployment.
 
 * * * * *
 
