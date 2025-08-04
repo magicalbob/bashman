@@ -1,5 +1,3 @@
-# src/bashman/cli.py
-
 #!/usr/bin/env python3
 import os
 import sys
@@ -11,8 +9,9 @@ import httpx
 app = typer.Typer()
 DEFAULT_URL = "http://127.0.0.1:8000"
 
-# Same regex as the server
-SHELL_REGEX = re.compile(r"^#!\s*/(?:usr/bin/env\s+)?(sh|bash|zsh|csh)\b")
+SHELL_REGEX = re.compile(
+    r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
+)
 
 @app.command()
 def start(host: str = "127.0.0.1", port: int = 8000):
@@ -31,19 +30,17 @@ def publish(path: str, url: str = DEFAULT_URL):
         typer.echo("Error: file does not exist", err=True)
         raise typer.Exit(1)
 
-    # Inspect the shebang
     with open(path, "rb") as f:
         snippet = f.read(1024)
     first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
     if not SHELL_REGEX.match(first_line):
         typer.echo(
-            "Error: file does not start with a shell shebang "
-            "(e.g. #!/usr/bin/env bash)",
+            "Error: file does not start with a recognized shell shebang "
+            "(e.g. #!/bin/bash or #!/usr/bin/env bash)",
             err=True
         )
         raise typer.Exit(1)
 
-    # All good—upload
     with open(path, "rb") as f:
         resp = httpx.post(f"{url}/scripts", files={"file": (os.path.basename(path), f)})
     if resp.status_code == 200:

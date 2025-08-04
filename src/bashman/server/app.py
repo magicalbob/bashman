@@ -10,8 +10,11 @@ app = FastAPI()
 QUARANTINE_DIR = os.path.join(os.getcwd(), "quarantine")
 os.makedirs(QUARANTINE_DIR, exist_ok=True)
 
-# Accept shebangs pointing at sh, bash, zsh, csh (with or without /usr/bin/env)
-SHELL_REGEX = re.compile(r"^#!\s*/(?:usr/bin/env\s+)?(sh|bash|zsh|csh)\b")
+# Allow absolute paths ending in sh|bash|zsh|csh|ksh|dash|fish, 
+# plus the /usr/bin/env trick
+SHELL_REGEX = re.compile(
+    r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
+)
 
 @app.get("/scripts")
 async def list_scripts():
@@ -28,16 +31,17 @@ async def list_scripts():
 
 @app.post("/scripts")
 async def upload_script(file: UploadFile = File(...)):
-    # Read up to 1 KiB to grab the first line
     snippet = await file.read(1024)
     first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
     if not SHELL_REGEX.match(first_line):
         raise HTTPException(
-            status_code=400,
-            detail="Script must begin with a shell shebang (e.g. #!/usr/bin/env bash)"
+            400,
+            detail=(
+                "Script must begin with a recognized shell shebang, "
+                "e.g. #!/bin/bash or #!/usr/bin/env bash"
+            )
         )
 
-    # Reset and save
     await file.seek(0)
     dest = os.path.join(QUARANTINE_DIR, file.filename)
     if os.path.exists(dest):
