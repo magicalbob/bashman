@@ -171,6 +171,23 @@ Roadmap
 
 * * * * *
 
+## Backlog Ideas
+
+These features are not yet prioritized but may be explored in future iterations:
+
+- **YAML Package Format Support**: Allow `bashman.yaml` as an alternative to `bashman.json` for greater flexibility and user preference.
+- **Auto Tap Discovery**: Federation via `.well-known/bashman.json` endpoints or domain-based conventions for dynamic registry discovery.
+- **Plugin System**:
+  - Custom install/uninstall hooks
+    - Tap source plugins (e.g. GitHub releases, GitLab snippets)
+    - **Alternative Script Sandboxing**: Support for non-Docker sandboxes using tools like `bwrap` or `firejail` for script isolation.
+    - **SPDX/SBOM Integration**: Emit SPDX-compliant Software Bill of Materials (SBOM) for packages to support traceability and compliance.
+    - **Template-Driven Package Scaffolding**: Allow reusable templates for common Bash package types (e.g. CLI tools, config generators).
+    - **Scheduled Tap Syncing**: Automatically refresh remote taps on a schedule for freshness without manual invocation.
+
+    These backlog items are intended as inspiration or rainy-day enhancements and are not yet on the formal roadmap.
+* * * * *
+
 Contributing
 ------------
 
