@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -16,7 +16,7 @@ class Package(BaseModel):
     description: str
 
 class PackageMetadata(BaseModel):
-    """Complete package metadata model"""
+    """Complete package metadata model - no file_path since content is in database"""
     id: Optional[int] = None
     name: str
     version: str
@@ -29,7 +29,7 @@ class PackageMetadata(BaseModel):
     dependencies: Dict[str, str] = {}
     platforms: List[str] = []
     shell_version: Optional[str] = None
-    file_path: str
+    file_path: Optional[str] = None  # Deprecated, always None now
     file_size: Optional[int] = None
     file_hash: Optional[str] = None
     status: PackageStatus = PackageStatus.QUARANTINED
@@ -50,3 +50,16 @@ class CreatePackageRequest(BaseModel):
     dependencies: Dict[str, str] = {}
     platforms: List[str] = []
     shell_version: Optional[str] = None
+
+class PackageSearchResult(BaseModel):
+    """Search result with relevance scoring"""
+    package: PackageMetadata
+    relevance_score: Optional[float] = None
+
+class RegistryStats(BaseModel):
+    """Registry statistics model"""
+    total_packages: int
+    published_packages: int
+    quarantined_packages: int
+    total_downloads: int
+    storage_type: str = "database"

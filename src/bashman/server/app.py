@@ -1,36 +1,39 @@
-import os
 import re
+import os
 import hashlib
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+import json
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Response
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
 from .database.factory import DatabaseFactory
 from .database.base import DatabaseInterface
-from .models import PackageMetadata, CreatePackageRequest, PackageStatus
+from .models import PackageMetadata, PackageStatus
 
 # Global database instance
 db: Optional[DatabaseInterface] = None
+
+# Get database path from environment or default
+DB_PATH = os.environ.get('BASHMAN_DB_PATH', 'bashman.db')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
     global db
-    # Startup
-    db = await DatabaseFactory.create_and_initialize("sqlite", db_path="bashman.db")
+    db = await DatabaseFactory.create_and_initialize("sqlite", db_path=DB_PATH)
     yield
-    # Shutdown
     if db:
         await db.close()
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="Bashman Registry",
+    description="Package manager for Bash scripts",
+    version="0.1.0",
+    lifespan=lifespan
+)
 
-QUARANTINE_DIR = os.path.join(os.getcwd(), "quarantine")
-os.makedirs(QUARANTINE_DIR, exist_ok=True)
-
-# Allow absolute paths ending in sh|bash|zsh|csh|ksh|dash|fish, 
-# plus the /usr/bin/env trick
+# Shell validation regex
 SHELL_REGEX = re.compile(
     r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
 )
@@ -41,31 +44,11 @@ def get_database() -> DatabaseInterface:
         raise HTTPException(500, "Database not initialized")
     return db
 
-def calculate_file_hash(content: bytes) -> str:
-    """Calculate SHA256 hash of file content"""
-    return hashlib.sha256(content).hexdigest()
-
-# Legacy endpoints for backward compatibility
-@app.get("/scripts")
-async def list_scripts():
-    """Legacy endpoint - list quarantined scripts from filesystem"""
-    valid = []
-    for fname in os.listdir(QUARANTINE_DIR):
-        path = os.path.join(QUARANTINE_DIR, fname)
-        if not os.path.isfile(path):
-            continue
-        with open(path, "rb") as f:
-            first = f.readline().decode(errors="ignore")
-        if SHELL_REGEX.match(first):
-            valid.append(fname)
-    return JSONResponse(content=valid)
-
-@app.post("/scripts")
-async def upload_script(file: UploadFile = File(...), database: DatabaseInterface = Depends(get_database)):
-    """Legacy endpoint - upload script with basic metadata extraction"""
-    content = await file.read()
+def validate_shell_script(content: bytes) -> None:
+    """Validate that content is a shell script with proper shebang"""
+    if not content:
+        raise HTTPException(400, "Script content cannot be empty")
     first_line = content.splitlines()[0].decode(errors="ignore") if content else ""
-    
     if not SHELL_REGEX.match(first_line):
         raise HTTPException(
             400,
@@ -75,71 +58,95 @@ async def upload_script(file: UploadFile = File(...), database: DatabaseInterfac
             )
         )
 
-    # Check if file already exists in database
+#
+# Legacy endpoints for backward compatibility
+#
+
+@app.get("/scripts", deprecated=True)
+async def list_scripts_legacy(database: DatabaseInterface = Depends(get_database)):
+    packages = await database.list_packages(status="quarantined", limit=1000)
+    return JSONResponse(content=[pkg.name for pkg in packages])
+
+@app.post("/scripts", deprecated=True)
+async def upload_script_legacy(
+    file: UploadFile = File(...),
+    database: DatabaseInterface = Depends(get_database)
+):
+    content = await file.read()
+    validate_shell_script(content)
+
     existing = await database.get_package(file.filename)
     if existing:
         raise HTTPException(409, f"{file.filename} already exists")
-    
-    # Save file
-    dest = os.path.join(QUARANTINE_DIR, file.filename)
-    if os.path.exists(dest):
-        raise HTTPException(409, f"{file.filename} already exists in filesystem")
-    
-    with open(dest, "wb") as out:
-        out.write(content)
-    
-    # Create database entry
+
     package_metadata = PackageMetadata(
         name=file.filename,
-        version="0.1.0",  # Default version for legacy uploads
+        version="0.1.0",
         description=f"Uploaded script: {file.filename}",
-        file_path=dest,
         file_size=len(content),
-        file_hash=calculate_file_hash(content),
+        file_hash=hashlib.sha256(content).hexdigest(),
         status=PackageStatus.QUARANTINED
     )
-    
-    await database.create_package(package_metadata)
-    
+    await database.create_package(package_metadata, content)
+
     return {"status": "quarantined", "filename": file.filename}
 
+#
 # New API endpoints
+#
+
 @app.get("/api/packages", response_model=List[PackageMetadata])
 async def list_packages(
-    limit: int = 100, 
+    limit: int = 100,
     offset: int = 0,
-    status: str = "published",
+    status: Optional[str] = "published",
     database: DatabaseInterface = Depends(get_database)
 ):
-    """List packages with pagination and filtering"""
-    if status == "all":
-        packages = await database.list_packages(limit, offset)
-    else:
-        # For now, just return published packages
-        # TODO: Add status filtering to database interface
-        packages = await database.list_packages(limit, offset)
-        packages = [p for p in packages if p.status == status]
-    
+    packages = await database.list_packages(limit, offset, status)
     return packages
 
 @app.get("/api/packages/{name}", response_model=PackageMetadata)
 async def get_package(
-    name: str, 
+    name: str,
     version: Optional[str] = None,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Get a specific package"""
     package = await database.get_package(name, version)
     if not package:
         raise HTTPException(404, f"Package {name} not found")
     return package
+
+@app.get("/api/packages/{name}/download")
+async def download_package(
+    name: str,
+    version: Optional[str] = None,
+    database: DatabaseInterface = Depends(get_database)
+):
+    result = await database.get_package_with_content(name, version)
+    if not result:
+        raise HTTPException(404, f"Package {name} not found")
+    package, content = result
+
+    if package.status != PackageStatus.PUBLISHED:
+        raise HTTPException(403, f"Package {name} is not published")
+
+    await database.record_download(package.id)
+
+    filename = f"{package.name}-{package.version}"
+    return Response(
+        content=content,
+        media_type="application/x-shellscript",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Length": str(len(content))
+        }
+    )
 
 @app.get("/api/packages/{name}/versions", response_model=List[str])
 async def get_package_versions(
     name: str,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Get all versions of a package"""
     versions = await database.get_package_versions(name)
     if not versions:
         raise HTTPException(404, f"Package {name} not found")
@@ -147,57 +154,58 @@ async def get_package_versions(
 
 @app.post("/api/packages", response_model=dict)
 async def create_package(
-    request: CreatePackageRequest,
-    file: UploadFile = File(...),
-    database: DatabaseInterface = Depends(get_database)
+    name: str                    = Form(...),
+    version: str                 = Form(...),
+    description: str             = Form(...),
+    author: Optional[str]        = Form(None),
+    homepage: Optional[str]      = Form(None),
+    repository: Optional[str]    = Form(None),
+    license: Optional[str]       = Form(None),
+    keywords: str                = Form('[]'),
+    dependencies: str            = Form('{}'),
+    platforms: str               = Form('[]'),
+    shell_version: Optional[str] = Form(None),
+    file: UploadFile             = File(...),
+    database: DatabaseInterface  = Depends(get_database),
 ):
-    """Create a new package with full metadata"""
+    """Create a new package with full metadata (via multipart form)."""
     content = await file.read()
-    first_line = content.splitlines()[0].decode(errors="ignore") if content else ""
-    
-    if not SHELL_REGEX.match(first_line):
-        raise HTTPException(
-            400,
-            detail="Script must begin with a recognized shell shebang"
-        )
-    
-    # Check for existing package
-    existing = await database.get_package(request.name, request.version)
+    validate_shell_script(content)
+
+    # Parse JSON-encoded form fields
+    try:
+        kw_list   = json.loads(keywords)
+        dep_map   = json.loads(dependencies)
+        plat_list = json.loads(platforms)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON in keywords/dependencies/platforms")
+
+    existing = await database.get_package(name, version)
     if existing:
-        raise HTTPException(409, f"Package {request.name} version {request.version} already exists")
-    
-    # Save file with proper naming
-    filename = f"{request.name}-{request.version}"
-    dest = os.path.join(QUARANTINE_DIR, filename)
-    
-    with open(dest, "wb") as out:
-        out.write(content)
-    
-    # Create package metadata
-    package_metadata = PackageMetadata(
-        name=request.name,
-        version=request.version,
-        description=request.description,
-        author=request.author,
-        homepage=request.homepage,
-        repository=request.repository,
-        license=request.license,
-        keywords=request.keywords,
-        dependencies=request.dependencies,
-        platforms=request.platforms,
-        shell_version=request.shell_version,
-        file_path=dest,
+        raise HTTPException(409, f"Package {name} version {version} already exists")
+
+    pkg = PackageMetadata(
+        name=name,
+        version=version,
+        description=description,
+        author=author,
+        homepage=homepage,
+        repository=repository,
+        license=license,
+        keywords=kw_list,
+        dependencies=dep_map,
+        platforms=plat_list,
+        shell_version=shell_version,
         file_size=len(content),
-        file_hash=calculate_file_hash(content),
+        file_hash=hashlib.sha256(content).hexdigest(),
         status=PackageStatus.QUARANTINED
     )
-    
-    package_id = await database.create_package(package_metadata)
-    
+    pkg_id = await database.create_package(pkg, content)
+
     return {
-        "id": package_id,
+        "id": pkg_id,
         "status": "created",
-        "message": f"Package {request.name} version {request.version} created successfully"
+        "message": f"Package {name} version {version} created successfully"
     }
 
 @app.get("/api/search", response_model=List[PackageMetadata])
@@ -206,10 +214,8 @@ async def search_packages(
     limit: int = 50,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Search packages"""
     if not q.strip():
         raise HTTPException(400, "Search query cannot be empty")
-    
     results = await database.search_packages(q.strip(), limit)
     return results
 
@@ -219,15 +225,14 @@ async def get_trending_packages(
     limit: int = 10,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Get trending packages"""
     return await database.get_trending_packages(days, limit)
 
 @app.get("/api/stats")
 async def get_stats(database: DatabaseInterface = Depends(get_database)):
-    """Get registry statistics"""
     package_count = await database.get_package_count()
     return {
         "total_packages": package_count,
+        "storage_type": "database",
         "status": "operational"
     }
 
@@ -237,14 +242,11 @@ async def publish_package(
     version: str,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Publish a quarantined package"""
     success = await database.update_package(
         name, version, {"status": PackageStatus.PUBLISHED}
     )
-    
     if not success:
         raise HTTPException(404, f"Package {name} version {version} not found")
-    
     return {"status": "published", "message": f"Package {name} version {version} is now published"}
 
 @app.delete("/api/packages/{name}/{version}")
@@ -253,10 +255,22 @@ async def delete_package(
     version: str,
     database: DatabaseInterface = Depends(get_database)
 ):
-    """Delete a package version"""
     success = await database.delete_package(name, version)
-    
     if not success:
         raise HTTPException(404, f"Package {name} version {version} not found")
-    
     return {"status": "deleted", "message": f"Package {name} version {version} has been deleted"}
+
+@app.get("/api/packages/{name}/content", deprecated=True)
+async def get_package_content_debug(
+    name: str,
+    version: Optional[str] = None,
+    database: DatabaseInterface = Depends(get_database)
+):
+    content = await database.get_package_content(name, version)
+    if not content:
+        raise HTTPException(404, f"Package {name} not found")
+    return Response(content=content, media_type="text/plain")
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "storage": "database-only"}

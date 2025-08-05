@@ -1,15 +1,14 @@
-import sqlite3
 import aiosqlite
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any, Tuple
+from datetime import datetime
 import json
-import os
+import hashlib
 
 from .base import DatabaseInterface
 from ..models import PackageMetadata
 
 class SQLiteDatabase(DatabaseInterface):
-    """SQLite implementation of the database interface"""
+    """SQLite implementation storing scripts as BLOBs"""
     
     def __init__(self, db_path: str = "bashman.db"):
         self.db_path = db_path
@@ -41,10 +40,10 @@ class SQLiteDatabase(DatabaseInterface):
             dependencies TEXT, -- JSON object
             platforms TEXT, -- JSON array
             shell_version TEXT,
-            file_path TEXT NOT NULL,
-            file_size INTEGER,
-            file_hash TEXT,
-            status TEXT DEFAULT 'quarantined', -- quarantined, published, deprecated
+            content BLOB NOT NULL, -- Script content stored as BLOB
+            file_size INTEGER NOT NULL,
+            file_hash TEXT NOT NULL,
+            status TEXT DEFAULT 'quarantined', -- quarantined, published, deprecated, deleted
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             download_count INTEGER DEFAULT 0,
@@ -55,6 +54,30 @@ class SQLiteDatabase(DatabaseInterface):
         CREATE INDEX IF NOT EXISTS idx_packages_status ON packages(status);
         CREATE INDEX IF NOT EXISTS idx_packages_created_at ON packages(created_at);
         CREATE INDEX IF NOT EXISTS idx_packages_download_count ON packages(download_count);
+        CREATE INDEX IF NOT EXISTS idx_packages_hash ON packages(file_hash);
+        
+        -- Full-text search support
+        CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(
+            name, description, keywords, content=packages, content_rowid=id
+        );
+        
+        -- Triggers to keep FTS in sync
+        CREATE TRIGGER IF NOT EXISTS packages_fts_insert AFTER INSERT ON packages BEGIN
+            INSERT INTO packages_fts(rowid, name, description, keywords) 
+            VALUES (new.id, new.name, new.description, new.keywords);
+        END;
+        
+        CREATE TRIGGER IF NOT EXISTS packages_fts_delete AFTER DELETE ON packages BEGIN
+            INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) 
+            VALUES('delete', old.id, old.name, old.description, old.keywords);
+        END;
+        
+        CREATE TRIGGER IF NOT EXISTS packages_fts_update AFTER UPDATE ON packages BEGIN
+            INSERT INTO packages_fts(packages_fts, rowid, name, description, keywords) 
+            VALUES('delete', old.id, old.name, old.description, old.keywords);
+            INSERT INTO packages_fts(rowid, name, description, keywords) 
+            VALUES (new.id, new.name, new.description, new.keywords);
+        END;
         
         CREATE TABLE IF NOT EXISTS package_downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,13 +95,20 @@ class SQLiteDatabase(DatabaseInterface):
         await self._db.executescript(schema)
         await self._db.commit()
     
-    async def create_package(self, package: PackageMetadata) -> str:
-        """Create a new package"""
+    def _calculate_hash(self, content: bytes) -> str:
+        """Calculate SHA256 hash of content"""
+        return hashlib.sha256(content).hexdigest()
+    
+    async def create_package(self, package: PackageMetadata, content: bytes) -> str:
+        """Create a new package with script content"""
+        file_hash = self._calculate_hash(content)
+        file_size = len(content)
+        
         query = """
         INSERT INTO packages (
             name, version, description, author, homepage, repository, 
             license, keywords, dependencies, platforms, shell_version,
-            file_path, file_size, file_hash, status
+            content, file_size, file_hash, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         
@@ -94,9 +124,9 @@ class SQLiteDatabase(DatabaseInterface):
             json.dumps(package.dependencies) if package.dependencies else None,
             json.dumps(package.platforms) if package.platforms else None,
             package.shell_version,
-            package.file_path,
-            package.file_size,
-            package.file_hash,
+            content,
+            file_size,
+            file_hash,
             package.status
         )
         
@@ -105,14 +135,22 @@ class SQLiteDatabase(DatabaseInterface):
         return str(cursor.lastrowid)
     
     async def get_package(self, name: str, version: Optional[str] = None) -> Optional[PackageMetadata]:
-        """Get a package by name and optionally version"""
+        """Get package metadata without content"""
         if version:
-            query = "SELECT * FROM packages WHERE name = ? AND version = ? AND status != 'deleted'"
+            query = """
+            SELECT id, name, version, description, author, homepage, repository, 
+                   license, keywords, dependencies, platforms, shell_version,
+                   file_size, file_hash, status, created_at, updated_at, download_count
+            FROM packages 
+            WHERE name = ? AND version = ? AND status != 'deleted'
+            """
             params = (name, version)
         else:
-            # Get latest version
             query = """
-            SELECT * FROM packages 
+            SELECT id, name, version, description, author, homepage, repository, 
+                   license, keywords, dependencies, platforms, shell_version,
+                   file_size, file_hash, status, created_at, updated_at, download_count
+            FROM packages 
             WHERE name = ? AND status != 'deleted'
             ORDER BY created_at DESC 
             LIMIT 1
@@ -126,16 +164,76 @@ class SQLiteDatabase(DatabaseInterface):
             return self._row_to_package_metadata(row)
         return None
     
-    async def list_packages(self, limit: int = 100, offset: int = 0) -> List[PackageMetadata]:
-        """List all packages with pagination"""
-        query = """
-        SELECT * FROM packages 
-        WHERE status = 'published'
-        ORDER BY created_at DESC 
-        LIMIT ? OFFSET ?
-        """
+    async def get_package_content(self, name: str, version: Optional[str] = None) -> Optional[bytes]:
+        """Get only the script content"""
+        if version:
+            query = "SELECT content FROM packages WHERE name = ? AND version = ? AND status != 'deleted'"
+            params = (name, version)
+        else:
+            query = """
+            SELECT content FROM packages 
+            WHERE name = ? AND status != 'deleted'
+            ORDER BY created_at DESC 
+            LIMIT 1
+            """
+            params = (name,)
         
-        cursor = await self._db.execute(query, (limit, offset))
+        cursor = await self._db.execute(query, params)
+        row = await cursor.fetchone()
+        
+        return row[0] if row else None
+    
+    async def get_package_with_content(self, name: str, version: Optional[str] = None) -> Optional[Tuple[PackageMetadata, bytes]]:
+        """Get both package metadata and content"""
+        if version:
+            query = "SELECT * FROM packages WHERE name = ? AND version = ? AND status != 'deleted'"
+            params = (name, version)
+        else:
+            query = """
+            SELECT * FROM packages 
+            WHERE name = ? AND status != 'deleted'
+            ORDER BY created_at DESC 
+            LIMIT 1
+            """
+            params = (name,)
+        
+        cursor = await self._db.execute(query, params)
+        row = await cursor.fetchone()
+        
+        if row:
+            # Extract metadata (all columns except content which is at index 12)
+            metadata_row = row[:12] + row[13:]  # Skip content column
+            metadata = self._row_to_package_metadata(metadata_row)
+            content = row[12]  # Content is at index 12
+            return metadata, content
+        return None
+    
+    async def list_packages(self, limit: int = 100, offset: int = 0, status: Optional[str] = None) -> List[PackageMetadata]:
+        """List packages with pagination and optional status filtering"""
+        if status:
+            query = """
+            SELECT id, name, version, description, author, homepage, repository, 
+                   license, keywords, dependencies, platforms, shell_version,
+                   file_size, file_hash, status, created_at, updated_at, download_count
+            FROM packages 
+            WHERE status = ?
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+            """
+            params = (status, limit, offset)
+        else:
+            query = """
+            SELECT id, name, version, description, author, homepage, repository, 
+                   license, keywords, dependencies, platforms, shell_version,
+                   file_size, file_hash, status, created_at, updated_at, download_count
+            FROM packages 
+            WHERE status != 'deleted'
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+            """
+            params = (limit, offset)
+        
+        cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         
         return [self._row_to_package_metadata(row) for row in rows]
@@ -183,28 +281,19 @@ class SQLiteDatabase(DatabaseInterface):
         return cursor.rowcount > 0
     
     async def search_packages(self, query: str, limit: int = 50) -> List[PackageMetadata]:
-        """Search packages by name, description, or keywords"""
+        """Search packages using FTS"""
         search_query = """
-        SELECT * FROM packages 
-        WHERE status = 'published' AND (
-            name LIKE ? OR 
-            description LIKE ? OR 
-            keywords LIKE ?
-        )
-        ORDER BY 
-            CASE WHEN name LIKE ? THEN 1 ELSE 2 END,
-            download_count DESC,
-            created_at DESC
+        SELECT p.id, p.name, p.version, p.description, p.author, p.homepage, p.repository, 
+               p.license, p.keywords, p.dependencies, p.platforms, p.shell_version,
+               p.file_size, p.file_hash, p.status, p.created_at, p.updated_at, p.download_count
+        FROM packages p
+        JOIN packages_fts fts ON p.id = fts.rowid
+        WHERE p.status = 'published' AND packages_fts MATCH ?
+        ORDER BY rank, p.download_count DESC, p.created_at DESC
         LIMIT ?
         """
         
-        search_term = f"%{query}%"
-        name_priority = f"{query}%"  # Exact name matches get priority
-        
-        cursor = await self._db.execute(
-            search_query, 
-            (search_term, search_term, search_term, name_priority, limit)
-        )
+        cursor = await self._db.execute(search_query, (query, limit))
         rows = await cursor.fetchall()
         
         return [self._row_to_package_metadata(row) for row in rows]
@@ -232,7 +321,10 @@ class SQLiteDatabase(DatabaseInterface):
     async def get_trending_packages(self, days: int = 7, limit: int = 10) -> List[PackageMetadata]:
         """Get trending packages based on recent downloads"""
         query = """
-        SELECT p.*, COUNT(pd.id) as recent_downloads
+        SELECT p.id, p.name, p.version, p.description, p.author, p.homepage, p.repository, 
+               p.license, p.keywords, p.dependencies, p.platforms, p.shell_version,
+               p.file_size, p.file_hash, p.status, p.created_at, p.updated_at, p.download_count,
+               COUNT(pd.id) as recent_downloads
         FROM packages p
         LEFT JOIN package_downloads pd ON p.id = pd.package_id 
             AND pd.downloaded_at > datetime('now', '-{} days')
@@ -264,7 +356,14 @@ class SQLiteDatabase(DatabaseInterface):
         await self._db.commit()
     
     def _row_to_package_metadata(self, row) -> PackageMetadata:
-        """Convert database row to PackageMetadata object"""
+        """Convert database row to PackageMetadata object
+        
+        Expected row order:
+        0: id, 1: name, 2: version, 3: description, 4: author, 5: homepage,
+        6: repository, 7: license, 8: keywords, 9: dependencies, 10: platforms,
+        11: shell_version, 12: file_size, 13: file_hash, 14: status,
+        15: created_at, 16: updated_at, 17: download_count
+        """
         return PackageMetadata(
             id=row[0],
             name=row[1],
@@ -278,11 +377,11 @@ class SQLiteDatabase(DatabaseInterface):
             dependencies=json.loads(row[9]) if row[9] else {},
             platforms=json.loads(row[10]) if row[10] else [],
             shell_version=row[11],
-            file_path=row[12],
-            file_size=row[13],
-            file_hash=row[14],
-            status=row[15],
-            created_at=datetime.fromisoformat(row[16]) if row[16] else None,
-            updated_at=datetime.fromisoformat(row[17]) if row[17] else None,
-            download_count=row[18] or 0
+            file_path=None,  # No longer relevant
+            file_size=row[12],
+            file_hash=row[13],
+            status=row[14],
+            created_at=datetime.fromisoformat(row[15]) if row[15] else None,
+            updated_at=datetime.fromisoformat(row[16]) if row[16] else None,
+            download_count=row[17] or 0
         )

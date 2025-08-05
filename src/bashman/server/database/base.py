@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
-from ..models import Package, PackageMetadata
+from ..models import PackageMetadata
 
 class DatabaseInterface(ABC):
     """Abstract base class for database implementations"""
@@ -18,8 +18,8 @@ class DatabaseInterface(ABC):
     
     # Package CRUD operations
     @abstractmethod
-    async def create_package(self, package: PackageMetadata) -> str:
-        """Create a new package, return package ID"""
+    async def create_package(self, package: PackageMetadata, content: bytes) -> str:
+        """Create a new package with script content, return package ID"""
         pass
     
     @abstractmethod
@@ -28,8 +28,18 @@ class DatabaseInterface(ABC):
         pass
     
     @abstractmethod
-    async def list_packages(self, limit: int = 100, offset: int = 0) -> List[PackageMetadata]:
-        """List all packages with pagination"""
+    async def get_package_content(self, name: str, version: Optional[str] = None) -> Optional[bytes]:
+        """Get the script content for a package"""
+        pass
+    
+    @abstractmethod
+    async def get_package_with_content(self, name: str, version: Optional[str] = None) -> Optional[Tuple[PackageMetadata, bytes]]:
+        """Get both package metadata and content"""
+        pass
+    
+    @abstractmethod
+    async def list_packages(self, limit: int = 100, offset: int = 0, status: Optional[str] = None) -> List[PackageMetadata]:
+        """List packages with pagination and optional status filtering"""
         pass
     
     @abstractmethod
@@ -62,4 +72,9 @@ class DatabaseInterface(ABC):
     @abstractmethod
     async def get_trending_packages(self, days: int = 7, limit: int = 10) -> List[PackageMetadata]:
         """Get trending packages based on recent activity"""
+        pass
+    
+    @abstractmethod
+    async def record_download(self, package_id: int, user_agent: str = None, ip_address: str = None) -> None:
+        """Record a package download"""
         pass
