@@ -1,6 +1,8 @@
 Bashman: The Package Manager for Bash Scripts
 =============================================
 
+![Bashman Diagram](https://dev.ellisbs.co.uk/files/Bashman.png)
+
 **Bashman** brings a PyPI‑like experience to shell scripting: discover, install, and share Bash packages with full versioning, metadata, security scanning, and a unified registry model.
 
 * * * * *
