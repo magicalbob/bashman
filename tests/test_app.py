@@ -24,7 +24,6 @@ def clean_quarantine(tmp_path, monkeypatch):
     import shutil
     shutil.rmtree(str(quarantine_dir), ignore_errors=True)
     shutil.rmtree(str(tmp_path), ignore_errors=True)
-    shutil.rmtree(str(tmp_path), ignore_errors=True)
 
 
 def test_list_empty():
@@ -35,7 +34,7 @@ def test_list_empty():
 
 def test_upload_and_list(tmp_path):
     script_path = tmp_path / 'hello.sh'
-    script_path.write_text('echo Hello')
+    script_path.write_text('#!/bin/bash\necho Hello')  # Add proper shebang
     with open(script_path, 'rb') as f:
         resp = client.post('/scripts', files={'file': ('hello.sh', f)})
     assert resp.status_code == 200
@@ -51,7 +50,72 @@ def test_upload_non_sh_file(tmp_path):
     with open(non_script, 'rb') as f:
         resp = client.post('/scripts', files={'file': ('readme.txt', f)})
     assert resp.status_code == 400
-    assert 'Only .sh files are allowed' in resp.json()['detail']
+    assert 'Script must begin with a recognized shell shebang' in resp.json()['detail']
+
+
+def test_upload_different_shebangs(tmp_path):
+    """Test various valid shebang formats"""
+    valid_shebangs = [
+        '#!/bin/bash',
+        '#!/bin/sh',
+        '#!/usr/bin/env bash',
+        '#!/usr/bin/env zsh',
+        '#!/bin/zsh',
+        '#!/usr/bin/env fish'
+    ]
+    
+    for i, shebang in enumerate(valid_shebangs):
+        script_path = tmp_path / f'test{i}.sh'
+        script_path.write_text(f'{shebang}\necho test')
+        with open(script_path, 'rb') as f:
+            resp = client.post('/scripts', files={'file': (f'test{i}.sh', f)})
+        assert resp.status_code == 200, f"Failed for shebang: {shebang}"
+
+
+def test_upload_invalid_shebang(tmp_path):
+    """Test invalid shebang formats"""
+    invalid_cases = [
+        'echo hello',  # No shebang
+        '# This is a comment',  # Not a shebang
+        '#!/usr/bin/python',  # Wrong interpreter
+        '#!/bin/cat',  # Wrong interpreter
+    ]
+    
+    for i, content in enumerate(invalid_cases):
+        script_path = tmp_path / f'invalid{i}.sh'
+        script_path.write_text(content)
+        with open(script_path, 'rb') as f:
+            resp = client.post('/scripts', files={'file': (f'invalid{i}.sh', f)})
+        assert resp.status_code == 400, f"Should have failed for: {content}"
+        assert 'Script must begin with a recognized shell shebang' in resp.json()['detail']
+
+
+def test_upload_duplicate_file(tmp_path):
+    """Test uploading the same filename twice"""
+    script_path = tmp_path / 'duplicate.sh'
+    script_path.write_text('#!/bin/bash\necho first')
+    
+    # First upload should succeed
+    with open(script_path, 'rb') as f:
+        resp = client.post('/scripts', files={'file': ('duplicate.sh', f)})
+    assert resp.status_code == 200
+    
+    # Second upload should fail
+    with open(script_path, 'rb') as f:
+        resp = client.post('/scripts', files={'file': ('duplicate.sh', f)})
+    assert resp.status_code == 409
+    assert 'duplicate.sh already exists' in resp.json()['detail']
+
+
+def test_upload_empty_file(tmp_path):
+    """Test uploading an empty file"""
+    script_path = tmp_path / 'empty.sh'
+    script_path.write_text('')
+    with open(script_path, 'rb') as f:
+        resp = client.post('/scripts', files={'file': ('empty.sh', f)})
+    assert resp.status_code == 400
+    assert 'Script must begin with a recognized shell shebang' in resp.json()['detail']
+
 
 # tests/test_cli.py
 import pytest
@@ -77,7 +141,7 @@ class DummyResponse:
 
 def test_publish_success(tmp_path, monkeypatch):
     script = tmp_path / 'test.sh'
-    script.write_text('echo hi')
+    script.write_text('#!/bin/bash\necho hi')  # Add proper shebang
     def fake_post(url, files):
         assert url == f"{DEFAULT_URL}/scripts"
         return DummyResponse(200, 'OK')
@@ -90,7 +154,16 @@ def test_publish_success(tmp_path, monkeypatch):
 def test_publish_invalid_path():
     result = runner.invoke(app, ['publish', 'nope.sh'])
     assert result.exit_code != 0
-    assert 'must point at an existing .sh file' in result.stderr
+    assert 'Error: file does not exist' in result.stderr
+
+
+def test_publish_invalid_shebang(tmp_path):
+    """Test CLI validation of shebang"""
+    script = tmp_path / 'bad.sh'
+    script.write_text('echo no shebang')
+    result = runner.invoke(app, ['publish', str(script)])
+    assert result.exit_code != 0
+    assert 'Error: file does not start with a recognized shell shebang' in result.stderr
 
 
 def test_list_scripts(monkeypatch):
@@ -102,3 +175,15 @@ def test_list_scripts(monkeypatch):
     assert result.exit_code == 0
     assert 'a.sh' in result.stdout
     assert 'b.sh' in result.stdout
+
+
+def test_publish_server_error(tmp_path, monkeypatch):
+    """Test handling of server errors during publish"""
+    script = tmp_path / 'test.sh'
+    script.write_text('#!/bin/bash\necho hi')
+    def fake_post(url, files):
+        return DummyResponse(500, 'Internal Server Error')
+    monkeypatch.setattr('httpx.post', fake_post)
+    result = runner.invoke(app, ['publish', str(script)])
+    assert result.exit_code != 0
+    assert '✗ 500 — Internal Server Error' in result.stderr
