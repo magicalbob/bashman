@@ -35,7 +35,7 @@ run_tests:
     - poetry install --with dev
     - echo "Create config for testing"
     - mkdir -p ~/.config/bashman
-    - echo "{\"server_url\": \"https://bashman.ellisbs.co.uk\", \"nickname\": \"magicalbob\"}" > ~/.config/bashman/config.json
+    - echo "{\"server_url\": \"test_address", \"nickname\": \"magicalbob\"}" > ~/.config/bashman/config.json
     - echo "Running tests with pytest..."
     - poetry run pytest
     - echo "✅ All tests passed"
