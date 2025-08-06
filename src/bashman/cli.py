@@ -15,6 +15,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
 # Alias for tests compatibility
 DEFAULT_URL = DEFAULT_SERVER_URL
+BASHMAN_SERVER_URL="URL of the Bashman server"
 
 # Shell validation regex
 SHELL_REGEX = re.compile(
@@ -64,7 +65,7 @@ def init(
     server_url: str = typer.Option(
         DEFAULT_SERVER_URL,
         "--server-url",
-        help="URL of the Bashman server"
+        help=BASHMAN_SERVER_URL
     )
 ):
     """Initialize Bashman configuration with server URL and user nickname."""
@@ -108,7 +109,7 @@ def publish(
     url: str = typer.Option(
         None,
         "--server-url",
-        help="URL of the Bashman server"
+        help=BASHMAN_SERVER_URL
     )
 ):
     """Upload a shell script to the server."""
@@ -143,7 +144,7 @@ def _list(
     url: str = typer.Option(
         None,
         "--server-url",
-        help="URL of the Bashman server"
+        help=BASHMAN_SERVER_URL
     )
 ):
     """List scripts in quarantine."""
