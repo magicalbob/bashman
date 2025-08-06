@@ -2,7 +2,6 @@ aiosqlite==0.20.0
 annotated-types==0.7.0
 anyio==4.10.0
 astroid==3.3.11
-bashman @ file:///tmp/bashman.tar.gz#sha256=e131b1e47d164ce0535cf4a25ce654bd66a1078b01de367fd71de4f8de7413f3
 black==25.1.0
 build
 CacheControl==0.14.3

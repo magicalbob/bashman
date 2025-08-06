@@ -25,11 +25,11 @@ run_tests:
   image: docker.ellisbs.co.uk:5190/python:3.12
   stage: test
   before_script:
-    - python -m venv venv
+    - python3.12 -m venv venv
     - source venv/bin/activate
-    - pip install -r requirements.txt
     - python -m pip install --upgrade pip
     - pip install poetry
+    - poetry env use python3.12
   script:
     - echo "Installing package with dev dependencies..."
     - poetry install --with dev
