@@ -17,15 +17,13 @@ SHELL_REGEX = re.compile(
 )
 
 
-def load_server_url() -> str:
-    """Load the server URL from config, falling back to DEFAULT_SERVER_URL"""
+def load_config() -> dict:
+    """Load the configuration file, or return defaults."""
     try:
         with open(CONFIG_FILE) as f:
-            cfg = json.load(f)
-            return cfg.get("server_url", DEFAULT_SERVER_URL)
+            return json.load(f)
     except Exception:
-        return DEFAULT_SERVER_URL
-
+        return {}
 
 @app.callback(invoke_without_command=True)
 def main(
@@ -46,20 +44,26 @@ def main(
             )
             raise typer.Exit(1)
 
-    # Store effective server URL in context for commands to use
-    ctx.obj = {}
-    ctx.obj["server_url"] = server_url or load_server_url()
-
+    cfg = load_config()
+    ctx.obj = {
+        "server_url": server_url or cfg.get("server_url", DEFAULT_SERVER_URL),
+        "nickname": cfg.get("nickname")
+    }
 
 @app.command()
 def init(
+    nickname: str = typer.Option(
+        ...,  # mandatory
+        "--nickname",
+        help="User nickname"
+    ),
     server_url: str = typer.Option(
         DEFAULT_SERVER_URL,
         "--server-url",
         help="URL of the Bashman server"
     )
 ):
-    """Initialize Bashman configuration"""
+    """Initialize Bashman configuration with server URL and user nickname."""
     # If already initialized, error
     if CONFIG_FILE.exists():
         typer.echo(
@@ -70,10 +74,13 @@ def init(
 
     # Create config directory and file
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config = {
+        "server_url": server_url,
+        "nickname": nickname
+    }
     with open(CONFIG_FILE, "w") as f:
-        json.dump({"server_url": server_url}, f)
+        json.dump(config, f)
     typer.echo(f"Bashman initialized at {CONFIG_FILE}")
-
 
 @app.command()
 def start(
@@ -93,7 +100,6 @@ def start(
     ]
     os.execvp(cmd[0], cmd)
 
-
 @app.command()
 def publish(
     path: str,
@@ -104,7 +110,8 @@ def publish(
     )
 ):
     """Upload a shell script to the server."""
-    server = url or load_server_url()
+    cfg = load_config()
+    server = url or cfg.get("server_url", DEFAULT_SERVER_URL)
 
     if not os.path.isfile(path):
         typer.echo("Error: file does not exist", err=True)
@@ -129,7 +136,6 @@ def publish(
         typer.echo(f"✗ {resp.status_code} — {resp.text}", err=True)
         raise typer.Exit(1)
 
-
 @app.command(name="list")
 def _list(
     url: str = typer.Option(
@@ -139,12 +145,12 @@ def _list(
     )
 ):
     """List scripts in quarantine."""
-    server = url or load_server_url()
+    cfg = load_config()
+    server = url or cfg.get("server_url", DEFAULT_SERVER_URL)
     resp = httpx.get(f"{server}/scripts")
     resp.raise_for_status()
     for name in resp.json():
         typer.echo(name)
-
 
 if __name__ == "__main__":
     app()
