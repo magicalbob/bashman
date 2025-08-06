@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
 import os
 import sys
 import re
+import json
 
 import typer
 import httpx
@@ -12,6 +12,37 @@ DEFAULT_URL = "http://127.0.0.1:8000"
 SHELL_REGEX = re.compile(
     r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
 )
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    """Ensure Bashman is initialized before running most commands"""
+    # Skip check for init itself
+    if ctx.invoked_subcommand and ctx.invoked_subcommand != "init":
+        config_path = os.path.expanduser("~/.config/bashman/config.json")
+        if not os.path.exists(config_path):
+            typer.echo(
+                "Error: Bashman is not initialized. Please run `bashman init` first.",
+                err=True
+            )
+            raise typer.Exit(1)
+
+@app.command()
+def init():
+    """Initialize Bashman configuration"""
+    config_dir = os.path.expanduser("~/.config/bashman")
+    config_file = os.path.join(config_dir, "config.json")
+    # If already initialized, error
+    if os.path.exists(config_file):
+        typer.echo(
+            "Error: Bashman has already been initialized.",
+            err=True
+        )
+        raise typer.Exit(1)
+    # Create config directory and file
+    os.makedirs(config_dir, exist_ok=True)
+    with open(config_file, "w") as f:
+        json.dump({}, f)
+    typer.echo(f"Bashman initialized at {config_file}")
 
 @app.command()
 def start(host: str = "127.0.0.1", port: int = 8000):
