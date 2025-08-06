@@ -8,14 +8,18 @@ import typer
 import httpx
 
 app = typer.Typer()
+
+# Configuration constants
 CONFIG_DIR = Path.home() / ".config" / "bashman"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
+# Alias for tests compatibility
+DEFAULT_URL = DEFAULT_SERVER_URL
 
+# Shell validation regex
 SHELL_REGEX = re.compile(
     r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
 )
-
 
 def load_config() -> dict:
     """Load the configuration file, or return defaults."""
@@ -64,7 +68,6 @@ def init(
     )
 ):
     """Initialize Bashman configuration with server URL and user nickname."""
-    # If already initialized, error
     if CONFIG_FILE.exists():
         typer.echo(
             "Error: Bashman has already been initialized.",
@@ -72,7 +75,6 @@ def init(
         )
         raise typer.Exit(1)
 
-    # Create config directory and file
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config = {
         "server_url": server_url,
