@@ -332,55 +332,55 @@ class DummyResponse:
     def json(self):
         return self._json
 
-#def test_publish_success(tmp_path, monkeypatch):
-#    """Test CLI publish command"""
-#    script = tmp_path / 'test.sh'
-#    script.write_text('#!/bin/bash\necho hi')
-#    
-#    def fake_post(url, files):
-#        assert url == f"{DEFAULT_URL}/scripts"
-#        return DummyResponse(200, 'OK')
-#    
-#    monkeypatch.setattr('httpx.post', fake_post)
-#    result = runner.invoke(cli_app, ['publish', str(script)])
-#    assert result.exit_code == 0
-#    assert '✓ Quarantined: test.sh' in result.stdout
+def test_publish_success(tmp_path, monkeypatch):
+    """Test CLI publish command"""
+    script = tmp_path / 'test.sh'
+    script.write_text('#!/bin/bash\necho hi')
+    
+    def fake_post(url, files):
+        assert url == f"{DEFAULT_URL}/scripts"
+        return DummyResponse(200, 'OK')
+    
+    monkeypatch.setattr('httpx.post', fake_post)
+    result = runner.invoke(cli_app, ['publish', str(script)])
+    assert result.exit_code == 0
+    assert '✓ Quarantined: test.sh' in result.stdout
 
-#def test_publish_invalid_path():
-#    """Test CLI with invalid file path"""
-#    result = runner.invoke(cli_app, ['publish', 'nope.sh'])
-#    assert result.exit_code != 0
-#    assert 'Error: file does not exist' in result.stderr
+def test_publish_invalid_path():
+    """Test CLI with invalid file path"""
+    result = runner.invoke(cli_app, ['publish', 'nope.sh'])
+    assert result.exit_code != 0
+    assert 'Error: file does not exist' in result.stderr
 
-#def test_publish_invalid_shebang(tmp_path):
-#    """Test CLI validation of shebang"""
-#    script = tmp_path / 'bad.sh'
-#    script.write_text('echo no shebang')
-#    result = runner.invoke(cli_app, ['publish', str(script)])
-#    assert result.exit_code != 0
-#    assert 'Error: file does not start with a recognized shell shebang' in result.stderr
+def test_publish_invalid_shebang(tmp_path):
+    """Test CLI validation of shebang"""
+    script = tmp_path / 'bad.sh'
+    script.write_text('echo no shebang')
+    result = runner.invoke(cli_app, ['publish', str(script)])
+    assert result.exit_code != 0
+    assert 'Error: file does not start with a recognized shell shebang' in result.stderr
 
-#def test_list_scripts(monkeypatch):
-#    """Test CLI list command"""
-#    def fake_get(url):
-#        assert url == f"{DEFAULT_URL}/scripts"
-#        return DummyResponse(200, 'OK', json_data=['a.sh', 'b.sh'])
-#    
-#    monkeypatch.setattr('httpx.get', fake_get)
-#    result = runner.invoke(cli_app, ['list'])
-#    assert result.exit_code == 0
-#    assert 'a.sh' in result.stdout
-#    assert 'b.sh' in result.stdout
+def test_list_scripts(monkeypatch):
+    """Test CLI list command"""
+    def fake_get(url):
+        assert url == f"{DEFAULT_URL}/scripts"
+        return DummyResponse(200, 'OK', json_data=['a.sh', 'b.sh'])
+    
+    monkeypatch.setattr('httpx.get', fake_get)
+    result = runner.invoke(cli_app, ['list'])
+    assert result.exit_code == 0
+    assert 'a.sh' in result.stdout
+    assert 'b.sh' in result.stdout
 
-#def test_publish_server_error(tmp_path, monkeypatch):
-#    """Test handling of server errors during publish"""
-#    script = tmp_path / 'test.sh'
-#    script.write_text('#!/bin/bash\necho hi')
-#    
-#    def fake_post(url, files):
-#        return DummyResponse(500, 'Internal Server Error')
-#    
-#    monkeypatch.setattr('httpx.post', fake_post)
-#    result = runner.invoke(cli_app, ['publish', str(script)])
-#    assert result.exit_code != 0
-#    assert '✗ 500 — Internal Server Error' in result.stderr
+def test_publish_server_error(tmp_path, monkeypatch):
+    """Test handling of server errors during publish"""
+    script = tmp_path / 'test.sh'
+    script.write_text('#!/bin/bash\necho hi')
+    
+    def fake_post(url, files):
+        return DummyResponse(500, 'Internal Server Error')
+    
+    monkeypatch.setattr('httpx.post', fake_post)
+    result = runner.invoke(cli_app, ['publish', str(script)])
+    assert result.exit_code != 0
+    assert '✗ 500 — Internal Server Error' in result.stderr
