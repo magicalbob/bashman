@@ -34,7 +34,7 @@ run_tests:
     - echo "Installing package with dev dependencies..."
     - poetry install --with dev
     - echo "Running tests with pytest..."
-    - pytest
+    - poetry run pytest
     - echo "✅ All tests passed"
     - echo "Coverage file location:"
     - ls -la coverage.xml || echo "coverage.xml not found"
