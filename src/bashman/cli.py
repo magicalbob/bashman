@@ -19,7 +19,7 @@ BASHMAN_SERVER_URL="URL of the Bashman server"
 
 # Shell validation regex
 SHELL_REGEX = re.compile(
-    r'#!/(?:usr/bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)'
+    r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
 )
 
 def load_config() -> dict:
