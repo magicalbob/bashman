@@ -18,9 +18,7 @@ DEFAULT_URL = DEFAULT_SERVER_URL
 BASHMAN_SERVER_URL="URL of the Bashman server"
 
 # Shell validation regex
-SHELL_REGEX = re.compile(
-    r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
-)
+SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
 def load_config() -> dict:
     """Load the configuration file, or return defaults."""
