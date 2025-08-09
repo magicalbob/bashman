@@ -4,7 +4,7 @@ from .sqlite import SQLiteDatabase
 
 class DatabaseFactory:
     """Factory for creating database instances"""
-    
+
     @staticmethod
     def create_database(db_type: str = "sqlite", **kwargs) -> DatabaseInterface:
         """Create a database instance based on type"""
@@ -13,7 +13,7 @@ class DatabaseFactory:
             return SQLiteDatabase(db_path)
         else:
             raise ValueError(f"Unsupported database type: {db_type}")
-    
+
     @staticmethod
     async def create_and_initialize(db_type: str = "sqlite", **kwargs) -> DatabaseInterface:
         """Create and initialize a database instance"""
