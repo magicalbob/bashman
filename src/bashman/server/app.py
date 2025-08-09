@@ -34,9 +34,7 @@ app = FastAPI(
 )
 
 # Shell validation regex
-SHELL_REGEX = re.compile(
-    r"^#!\s*(?:/[^ \t]+/)*(?:env\s+)?(sh|bash|zsh|csh|ksh|dash|fish)\b"
-)
+SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
 def get_database() -> DatabaseInterface:
     """Dependency injection for database"""
