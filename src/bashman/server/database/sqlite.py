@@ -24,6 +24,11 @@ class SQLiteDatabase(DatabaseInterface):
         if self._db:
             await self._db.close()
 
+    async def store_user_info(self, nickname: str, public_key: str) -> None:
+        query = "INSERT INTO users (nickname, public_key, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
+        await self._db.execute(query, (nickname, public_key))
+        await self._db.commit()
+
     async def _create_schema(self) -> None:
         """Create database tables"""
         schema = """

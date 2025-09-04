@@ -11,6 +11,8 @@ from .database.factory import DatabaseFactory
 from .database.base import DatabaseInterface
 from .models import PackageMetadata, PackageStatus
 
+from pydantic import BaseModel
+
 # Global database instance
 db: Optional[DatabaseInterface] = None
 
@@ -272,3 +274,15 @@ async def get_package_content_debug(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "storage": "database-only"}
+
+class UserCreate(BaseModel):
+    nickname: str
+    public_key: str
+
+@app.post("/api/users", status_code=201)
+async def create_user(user: UserCreate, database: DatabaseInterface = Depends(get_database)):
+    try:
+        await database.store_user_info(user.nickname, user.public_key)
+        return {"status": "success", "message": "User registered successfully."}
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="User with this nickname or key already exists.")

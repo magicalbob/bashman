@@ -16,6 +16,11 @@ class DatabaseInterface(ABC):
         """Close database connections"""
         pass
 
+    @abstractmethod
+    async def store_user_info(self, nickname: str, public_key: str) -> None:
+        """Store user nickname and public key."""
+        pass
+
     # Package CRUD operations
     @abstractmethod
     async def create_package(self, package: PackageMetadata, content: bytes) -> str:
