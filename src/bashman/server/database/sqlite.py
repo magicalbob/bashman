@@ -32,6 +32,13 @@ class SQLiteDatabase(DatabaseInterface):
     async def _create_schema(self) -> None:
         """Create database tables"""
         schema = """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            nickname TEXT NOT NULL UNIQUE,
+            public_key TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS packages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,

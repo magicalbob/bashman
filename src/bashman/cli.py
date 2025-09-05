@@ -13,9 +13,7 @@ app = typer.Typer()
 CONFIG_DIR = Path.home() / ".config" / "bashman"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
-# Alias for tests compatibility
-DEFAULT_URL = DEFAULT_SERVER_URL
-BASHMAN_SERVER_URL="URL of the Bashman server"
+SERVER_URL_HELP = "URL of the Bashman server"
 
 # Shell validation regex
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
@@ -29,7 +27,8 @@ def load_config() -> dict:
         return {}
 
 def validate_private_key(key_path: str) -> tuple[bool, str]:
-    """Validate that the key file exists and contains a valid private key.
+    """
+    Validate that the key file exists and contains a valid private key.
 
     Returns:
         tuple[bool, str]: (is_valid, error_message)
@@ -88,16 +87,50 @@ def validate_private_key(key_path: str) -> tuple[bool, str]:
                 return False, "File contains invalid private key data"
 
     except ImportError:
-        # If cryptography is not available, just do basic format checking
-        msg = "Warning: cryptography library not available, doing basic validation only"
-        typer.echo(msg, err=True)
+        # If cryptography is not available, do basic format checking
+        return True, "Warning: cryptography library not available, doing basic validation only"
 
-
-        # Basic sanity check - should have matching footer
-        if "-----BEGIN" in key_content and "-----END" not in key_content:
-            return False, "Private key appears malformed (missing END marker)"
+    # Basic sanity check - should have matching footer
+    if "-----BEGIN" in key_content and "-----END" not in key_content:
+        return False, "Private key appears malformed (missing END marker)"
 
     return True, ""
+
+def get_public_key(key_path: str) -> str:
+    """
+    Derives the public key from the private key file.
+    
+    Returns:
+        str: The serialized OpenSSH public key.
+    """
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.serialization import (
+            load_pem_private_key,
+            load_ssh_private_key,
+            NoEncryption,
+        )
+
+        with open(key_path, "rb") as key_file:
+            key_bytes = key_file.read()
+
+        try:
+            private_key = load_pem_private_key(key_bytes, password=None)
+        except ValueError:
+            private_key = load_ssh_private_key(key_bytes, password=None)
+
+        public_key = private_key.public_key()
+        return public_key.public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH
+        ).decode("utf-8")
+
+    except ImportError:
+        typer.echo("Error: `cryptography` library is required to derive the public key. Please install it with `pip install cryptography`.", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"Error: Could not derive public key from file: {e}", err=True)
+        raise typer.Exit(1)
 
 @app.callback(invoke_without_command=True)
 def main(
@@ -108,9 +141,15 @@ def main(
         help="Override the server URL (default from config)"
     )
 ):
-    """Ensure Bashman is initialized before running most commands"""
-    # Skip check for init itself
-    if ctx.invoked_subcommand and ctx.invoked_subcommand != "init":
+    """
+    Ensure Bashman is initialized before running most commands.
+
+    This Typer callback runs before every command to load the configuration
+    and make it available in the context object for other commands to use.
+    """
+    # Skip check for init and start commands
+    skip_commands = ["init", "start"]
+    if ctx.invoked_subcommand and ctx.invoked_subcommand not in skip_commands:
         if not CONFIG_FILE.exists():
             typer.echo(
                 "Error: Bashman is not initialized. Please run `bashman init` first.",
@@ -140,7 +179,7 @@ def init(
     server_url: str = typer.Option(
         DEFAULT_SERVER_URL,
         "--server-url",
-        help=BASHMAN_SERVER_URL
+        help=SERVER_URL_HELP
     )
 ):
     """Initialize Bashman configuration with server URL, user nickname, and private key."""
@@ -159,10 +198,39 @@ def init(
     if not is_valid:
         typer.echo(f"Error: {error_msg}", err=True)
         raise typer.Exit(1)
+    elif error_msg:
+        # Print a warning if basic validation was used
+        typer.echo(f"{error_msg}", err=True)
 
     # Convert to absolute path for storage
     absolute_key_path = os.path.abspath(expanded_key_path)
 
+    # Register the user on the server
+    typer.echo("Registering user on the server...")
+    try:
+        public_key = get_public_key(absolute_key_path)
+        
+        payload = {
+            "nickname": nickname,
+            "public_key": public_key
+        }
+        
+        resp = httpx.post(f"{server_url}/api/users", json=payload)
+        resp.raise_for_status()
+        
+        typer.echo("✓ User registered successfully!")
+
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ An HTTP error occurred during registration: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ An error occurred while registering: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
+        raise typer.Exit(1)
+
+    # Create the config file only after successful registration
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config = {
         "server_url": server_url,
@@ -173,10 +241,11 @@ def init(
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
 
-    typer.echo(f"Bashman initialized at {CONFIG_FILE}")
+    typer.echo(f"Bashman configuration created at {CONFIG_FILE}")
     typer.echo(f"User: {nickname}")
     typer.echo(f"Key: {absolute_key_path}")
     typer.echo(f"Server: {server_url}")
+
 
 @app.command()
 def start(
@@ -198,55 +267,66 @@ def start(
 
 @app.command()
 def publish(
-    path: str,
-    url: str = typer.Option(
-        None,
-        "--server-url",
-        help=BASHMAN_SERVER_URL
-    )
+    ctx: typer.Context,
+    path: str
 ):
     """Upload a shell script to the server."""
-    cfg = load_config()
-    server = url or cfg.get("server_url", DEFAULT_SERVER_URL)
+    # Context object is automatically passed by Typer
+    server = ctx.obj["server_url"]
 
     if not os.path.isfile(path):
         typer.echo("Error: file does not exist", err=True)
         raise typer.Exit(1)
 
-    with open(path, "rb") as f:
-        snippet = f.read(1024)
-    first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
-    if not SHELL_REGEX.match(first_line):
-        typer.echo(
-            "Error: file does not start with a recognized shell shebang "
-            "(e.g. #!/bin/bash or #!/usr/bin/env bash)",
-            err=True,
-        )
-        raise typer.Exit(1)
+    try:
+        with open(path, "rb") as f:
+            snippet = f.read(1024)
+            first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
+            if not SHELL_REGEX.match(first_line):
+                typer.echo(
+                    "Error: file does not start with a recognized shell shebang "
+                    "(e.g. #!/bin/bash or #!/usr/bin/env bash)",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            f.seek(0) # Reset file pointer to beginning for post request
 
-    with open(path, "rb") as f:
-        resp = httpx.post(f"{server}/scripts", files={"file": (os.path.basename(path), f)})
-    if resp.status_code == 200:
+            resp = httpx.post(f"{server}/scripts", files={"file": (os.path.basename(path), f)})
+            resp.raise_for_status()
+
         typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
-    else:
-        typer.echo(f"✗ {resp.status_code} — {resp.text}", err=True)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
 
 @app.command(name="list")
 def _list(
-    url: str = typer.Option(
-        None,
-        "--server-url",
-        help=BASHMAN_SERVER_URL
-    )
+    ctx: typer.Context
 ):
     """List scripts in quarantine."""
-    cfg = load_config()
-    server = url or cfg.get("server_url", DEFAULT_SERVER_URL)
-    resp = httpx.get(f"{server}/scripts")
-    resp.raise_for_status()
-    for name in resp.json():
-        typer.echo(name)
+    # Context object is automatically passed by Typer
+    server = ctx.obj["server_url"]
+
+    try:
+        resp = httpx.get(f"{server}/scripts")
+        resp.raise_for_status()
+        for name in resp.json():
+            typer.echo(name)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ An error occurred while listing scripts: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
+        raise typer.Exit(1)
 
 if __name__ == "__main__":
     app()
