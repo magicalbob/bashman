@@ -13,6 +13,8 @@ app = typer.Typer()
 CONFIG_DIR = Path.home() / ".config" / "bashman"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
+# Back-compat for tests and older callers
+DEFAULT_URL = DEFAULT_SERVER_URL
 SERVER_URL_HELP = "URL of the Bashman server"
 
 # Shell validation regex
@@ -142,26 +144,16 @@ def main(
     )
 ):
     """
-    Ensure Bashman is initialized before running most commands.
-
-    This Typer callback runs before every command to load the configuration
-    and make it available in the context object for other commands to use.
+    Load config and inject defaults for commands.
+    Do not force `init`; commands that truly require config should check themselves.
     """
-    # Skip check for init and start commands
-    skip_commands = ["init", "start"]
-    if ctx.invoked_subcommand and ctx.invoked_subcommand not in skip_commands:
-        if not CONFIG_FILE.exists():
-            typer.echo(
-                "Error: Bashman is not initialized. Please run `bashman init` first.",
-                err=True,
-            )
-            raise typer.Exit(1)
+    cfg = load_config() if CONFIG_FILE.exists() else {}
+    resolved_server = server_url or cfg.get("server_url", DEFAULT_SERVER_URL)
 
-    cfg = load_config()
     ctx.obj = {
-        "server_url": server_url or cfg.get("server_url", DEFAULT_SERVER_URL),
+        "server_url": resolved_server,
         "nickname": cfg.get("nickname"),
-        "private_key_path": cfg.get("private_key_path")
+        "private_key_path": cfg.get("private_key_path"),
     }
 
 @app.command()
