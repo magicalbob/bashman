@@ -280,6 +280,10 @@ def test_base_interface_super_calls_cover_pass_lines():
         async def close(self) -> None:
             await super().close()
 
+        async def store_user_info(self, nickname: str, public_key: str) -> None:
+            # exercise the base class 'pass' body for coverage
+            return await super().store_user_info(nickname, public_key)
+
         async def create_package(self, package: PackageMetadata, content: bytes) -> str:
             await super().create_package(package, content)
             return "id"
