@@ -51,6 +51,7 @@ DB_PATH = os.environ.get("BASHMAN_DB_PATH", "bashman.db")
 REQUIRE_AUTH = os.environ.get("BASHMAN_REQUIRE_AUTH", "0") == "1"
 MAX_SKEW_SECONDS = 300  # 5 minutes for clock skew & nonce window
 _NONCE_CACHE: dict[tuple[str, str], float] = {}
+ALGORITHM_MISMATCH = "Algorithm mismatch"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -192,11 +193,11 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
 
         if isinstance(pub, ed25519.Ed25519PublicKey):
             if algo != "ed25519" and REQUIRE_AUTH:
-                raise HTTPException(401, "Algorithm mismatch")
+                raise HTTPException(401, ALGORITHM_MISMATCH)
             pub.verify(sig, msg)  # type: ignore
         elif isinstance(pub, rsa.RSAPublicKey):
             if algo != "rsa" and REQUIRE_AUTH:
-                raise HTTPException(401, "Algorithm mismatch")
+                raise HTTPException(401, ALGORITHM_MISMATCH)
             pub.verify(  # type: ignore
                 sig,
                 msg,
@@ -205,7 +206,7 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
             )
         elif isinstance(pub, ec.EllipticCurvePublicKey):
             if algo != "ecdsa" and REQUIRE_AUTH:
-                raise HTTPException(401, "Algorithm mismatch")
+                raise HTTPException(401, ALGORITHM_MISMATCH)
             pub.verify(sig, msg, ec.ECDSA(_hashes.SHA256()))  # type: ignore
         else:
             if REQUIRE_AUTH:
