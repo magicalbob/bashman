@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Emit a single, double-click-selectable token:
+# - 33 random bytes → 44 base64 chars
+# - Only [A-Za-z0-9_] to avoid word breaks in most terminals
+while :; do
+  pw="$(openssl rand -base64 33 | tr -d '\n' | tr '+/' '__')"
+  if [[ ${#pw} -eq 44 && $pw =~ ^[A-Za-z0-9_]{44}$ ]]; then
+    printf '%s\n' "$pw"
+    exit 0
+  fi
+done
