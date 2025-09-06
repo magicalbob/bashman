@@ -4,7 +4,8 @@ FROM python:3.12-slim
 # Unbuffered output, Poetry version, and ensure /app/src on PYTHONPATH
 ENV PYTHONUNBUFFERED=1 \
     POETRY_VERSION=1.9.0 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src \
+    BASHMAN_REQUIRE_AUTH=1
 
 # Install system build deps
 RUN apt-get update && \
