@@ -128,3 +128,10 @@ deploy_bashman:
     - echo "Waiting for app to become available..."
     - sleep 5
     - wget -q http://192.168.0.2:8000/health || (echo "Deployment failed"; exit 1)
+    - apk add py-pip
+    - python3 -m venv /tmp/venv
+    - . /tmp/venv/bin/activate
+    - pip install -e ".[dev]"
+    - ssh-keygen -f /root/.ssh/id_ed25519 -N ""
+    - python src/bashman/cli.py init --nickname developer --key-file  /root/.ssh/id_ed25519
+    - python src/bashman/cli.py list
