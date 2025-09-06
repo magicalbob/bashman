@@ -7,7 +7,7 @@ from base64 import b64decode
 from email.utils import parsedate_to_datetime
 from datetime import timezone
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, NamedTuple
 
 from fastapi import (
     FastAPI,
@@ -42,63 +42,152 @@ from .database.base import DatabaseInterface
 from .models import PackageMetadata, PackageStatus
 
 # -----------------------
-# Global DB & app setup
+# Constants
 # -----------------------
-
-db: Optional[DatabaseInterface] = None
-
 DB_PATH = os.environ.get("BASHMAN_DB_PATH", "bashman.db")
 REQUIRE_AUTH = os.environ.get("BASHMAN_REQUIRE_AUTH", "0") == "1"
 MAX_SKEW_SECONDS = 300  # 5 minutes for clock skew & nonce window
-_NONCE_CACHE: dict[tuple[str, str], float] = {}
 ALGORITHM_MISMATCH = "Algorithm mismatch"
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan management (init/close DB)."""
-    global db
-    db = await DatabaseFactory.create_and_initialize("sqlite", db_path=DB_PATH)
-    try:
-        yield
-    finally:
-        if db:
-            await db.close()
-
-app = FastAPI(
-    title="Bashman Registry",
-    description="Package manager for Bash scripts",
-    version="0.1.0",
-    lifespan=lifespan,
-)
+# -----------------------
+# Data structures for auth
+# -----------------------
+class SignatureData(NamedTuple):
+    user: str
+    date_str: str
+    nonce: str
+    algorithm: str
+    signature: bytes
+    message: bytes
 
 # -----------------------
-# Helpers
+# Global variables
 # -----------------------
+db: Optional[DatabaseInterface] = None
+_NONCE_CACHE: dict[tuple[str, str], float] = {}
 
-# Shell validation regex
+# -----------------------
+# Shell validation
+# -----------------------
 SHELL_REGEX = re.compile(r"^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)")
 
-def get_database() -> DatabaseInterface:
-    """Dependency injection for database."""
-    if db is None:
-        raise HTTPException(500, "Database not initialized")
-    return db
+# -----------------------
+# Authentication helpers (refactored)
+# -----------------------
 
-def validate_shell_script(content: bytes) -> None:
-    """Validate that content is a shell script with proper shebang."""
-    if not content:
-        raise HTTPException(400, "Script content cannot be empty")
-    first_line = content.splitlines()[0].decode(errors="ignore") if content else ""
-    if not SHELL_REGEX.match(first_line):
-        raise HTTPException(
-            400,
-            detail=(
-                "Script must begin with a recognized shell shebang, "
-                "e.g. #!/bin/bash or #!/usr/bin/env bash"
-            ),
-        )
+def _extract_signature_headers(request: Request) -> Optional[tuple[str, str, str, str, str]]:
+    """Extract signature headers from request. Returns None if any required header is missing."""
+    user = request.headers.get("X-Bashman-User")
+    date_str = request.headers.get("X-Bashman-Date")
+    nonce = request.headers.get("X-Bashman-Nonce")
+    alg = request.headers.get("X-Bashman-Alg")
+    auth = request.headers.get("Authorization", "")
+    
+    if not (user and date_str and nonce and auth.startswith("Bashman ")):
+        return None
+    
+    return user, date_str, nonce, alg or "", auth
 
-# ---- Signature verification helpers (optional) ----
+def _validate_signature_timing(date_str: str, user: str, nonce: str) -> None:
+    """Validate signature timing and prevent replay attacks."""
+    if not _within_skew(date_str):
+        raise HTTPException(401, "Signature date outside allowed skew")
+    
+    if not _replay_ok(user, nonce):
+        raise HTTPException(401, "Replay detected")
+
+def _prepare_signature_data(request: Request, user: str, date_str: str, nonce: str, 
+                          alg: str, auth: str, content: bytes | None) -> SignatureData:
+    """Prepare signature data for verification."""
+    parts = request.url
+    path_qs = parts.path + (("?" + parts.query) if parts.query else "")
+    body = content or b""
+    body_hex = hashlib.sha256(body).hexdigest()
+    msg = _canonical_bytes(request.method, path_qs, date_str, nonce, body_hex)
+    sig = b64decode(auth.split(" ", 1)[1].strip())
+    algorithm = _parse_alg(alg) or ""
+    
+    return SignatureData(user, date_str, nonce, algorithm, sig, msg)
+
+def _verify_ed25519_signature(pub: ed25519.Ed25519PublicKey, sig_data: SignatureData) -> None:
+    """Verify Ed25519 signature."""
+    if sig_data.algorithm != "ed25519" and REQUIRE_AUTH:
+        raise HTTPException(401, ALGORITHM_MISMATCH)
+    pub.verify(sig_data.signature, sig_data.message)  # type: ignore
+
+def _verify_rsa_signature(pub: rsa.RSAPublicKey, sig_data: SignatureData) -> None:
+    """Verify RSA signature."""
+    if sig_data.algorithm != "rsa" and REQUIRE_AUTH:
+        raise HTTPException(401, ALGORITHM_MISMATCH)
+    pub.verify(  # type: ignore
+        sig_data.signature,
+        sig_data.message,
+        _padding.PSS(mgf=_padding.MGF1(_hashes.SHA256()), salt_length=_padding.PSS.MAX_LENGTH),
+        _hashes.SHA256(),
+    )
+
+def _verify_ecdsa_signature(pub: ec.EllipticCurvePublicKey, sig_data: SignatureData) -> None:
+    """Verify ECDSA signature."""
+    if sig_data.algorithm != "ecdsa" and REQUIRE_AUTH:
+        raise HTTPException(401, ALGORITHM_MISMATCH)
+    pub.verify(sig_data.signature, sig_data.message, ec.ECDSA(_hashes.SHA256()))  # type: ignore
+
+def _perform_signature_verification(public_key: object, sig_data: SignatureData) -> None:
+    """Perform signature verification based on key type."""
+    if isinstance(public_key, ed25519.Ed25519PublicKey):
+        _verify_ed25519_signature(public_key, sig_data)
+    elif isinstance(public_key, rsa.RSAPublicKey):
+        _verify_rsa_signature(public_key, sig_data)
+    elif isinstance(public_key, ec.EllipticCurvePublicKey):
+        _verify_ecdsa_signature(public_key, sig_data)
+    else:
+        if REQUIRE_AUTH:
+            raise HTTPException(401, "Unsupported public key type")
+
+async def _verify_signature_or_401(request: Request, database: DatabaseInterface, content: bytes | None) -> None:
+    """
+    Verify Bashman signature if present; if REQUIRE_AUTH is on, enforce presence and validity.
+    Refactored to reduce cognitive complexity.
+    """
+    # Extract headers
+    header_data = _extract_signature_headers(request)
+    if not header_data:
+        if REQUIRE_AUTH:
+            raise HTTPException(401, "Missing Bashman signature headers")
+        return
+
+    user, date_str, nonce, alg, auth = header_data
+    
+    # Validate timing and prevent replays
+    _validate_signature_timing(date_str, user, nonce)
+    
+    # Check crypto support
+    if load_ssh_public_key is None and REQUIRE_AUTH:
+        raise HTTPException(500, "Server missing crypto support")
+
+    # Get user's public key
+    pubkey_text = await _fetch_user_public_key(database, user)
+    if pubkey_text is None:
+        if REQUIRE_AUTH:
+            raise HTTPException(401, "Unknown user")
+        return
+
+    try:
+        # Load public key and prepare signature data
+        public_key = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
+        sig_data = _prepare_signature_data(request, user, date_str, nonce, alg, auth, content)
+        
+        # Perform verification
+        _perform_signature_verification(public_key, sig_data)
+        
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(401, "Signature verification failed")
+
+# -----------------------
+# Existing helper functions (unchanged)
+# -----------------------
 
 async def _fetch_user_public_key(database: DatabaseInterface, nickname: str) -> Optional[str]:
     """
@@ -151,71 +240,51 @@ def _replay_ok(user: str, nonce: str) -> bool:
     _NONCE_CACHE[key] = now
     return True
 
-async def _verify_signature_or_401(request: Request, database: DatabaseInterface, content: bytes | None) -> None:
-    """
-    Verify Bashman signature if present; if REQUIRE_AUTH is on, enforce presence and validity.
-    """
-    user = request.headers.get("X-Bashman-User")
-    date_str = request.headers.get("X-Bashman-Date")
-    nonce = request.headers.get("X-Bashman-Nonce")
-    alg = request.headers.get("X-Bashman-Alg")
-    auth = request.headers.get("Authorization", "")
+# -----------------------
+# Global DB & app setup
+# -----------------------
 
-    if not (user and date_str and nonce and auth.startswith("Bashman ")):
-        if REQUIRE_AUTH:
-            raise HTTPException(401, "Missing Bashman signature headers")
-        return
-
-    if not _within_skew(date_str):
-        raise HTTPException(401, "Signature date outside allowed skew")
-
-    if not _replay_ok(user, nonce):
-        raise HTTPException(401, "Replay detected")
-
-    algo = _parse_alg(alg or "")
-    if load_ssh_public_key is None and REQUIRE_AUTH:
-        raise HTTPException(500, "Server missing crypto support")
-
-    pubkey_text = await _fetch_user_public_key(database, user)
-    if pubkey_text is None:
-        if REQUIRE_AUTH:
-            raise HTTPException(401, "Unknown user")
-        return
-
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan management (init/close DB)."""
+    global db
+    db = await DatabaseFactory.create_and_initialize("sqlite", db_path=DB_PATH)
     try:
-        pub = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
-        parts = request.url
-        path_qs = parts.path + (("?" + parts.query) if parts.query else "")
-        body = content or b""
-        body_hex = hashlib.sha256(body).hexdigest()
-        msg = _canonical_bytes(request.method, path_qs, date_str, nonce, body_hex)
-        sig = b64decode(auth.split(" ", 1)[1].strip())
+        yield
+    finally:
+        if db:
+            await db.close()
 
-        if isinstance(pub, ed25519.Ed25519PublicKey):
-            if algo != "ed25519" and REQUIRE_AUTH:
-                raise HTTPException(401, ALGORITHM_MISMATCH)
-            pub.verify(sig, msg)  # type: ignore
-        elif isinstance(pub, rsa.RSAPublicKey):
-            if algo != "rsa" and REQUIRE_AUTH:
-                raise HTTPException(401, ALGORITHM_MISMATCH)
-            pub.verify(  # type: ignore
-                sig,
-                msg,
-                _padding.PSS(mgf=_padding.MGF1(_hashes.SHA256()), salt_length=_padding.PSS.MAX_LENGTH),
-                _hashes.SHA256(),
-            )
-        elif isinstance(pub, ec.EllipticCurvePublicKey):
-            if algo != "ecdsa" and REQUIRE_AUTH:
-                raise HTTPException(401, ALGORITHM_MISMATCH)
-            pub.verify(sig, msg, ec.ECDSA(_hashes.SHA256()))  # type: ignore
-        else:
-            if REQUIRE_AUTH:
-                raise HTTPException(401, "Unsupported public key type")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(401, "Signature verification failed")
+app = FastAPI(
+    title="Bashman Registry",
+    description="Package manager for Bash scripts",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
+# -----------------------
+# Helpers
+# -----------------------
+
+def get_database() -> DatabaseInterface:
+    """Dependency injection for database."""
+    if db is None:
+        raise HTTPException(500, "Database not initialized")
+    return db
+
+def validate_shell_script(content: bytes) -> None:
+    """Validate that content is a shell script with proper shebang."""
+    if not content:
+        raise HTTPException(400, "Script content cannot be empty")
+    first_line = content.splitlines()[0].decode(errors="ignore") if content else ""
+    if not SHELL_REGEX.match(first_line):
+        raise HTTPException(
+            400,
+            detail=(
+                "Script must begin with a recognized shell shebang, "
+                "e.g. #!/bin/bash or #!/usr/bin/env bash"
+            ),
+        )
 
 async def require_auth(request: Request):
     if not REQUIRE_AUTH:
@@ -228,7 +297,6 @@ async def require_auth(request: Request):
     auth = request.headers.get("Authorization", "")
     if not user or not auth.startswith("Bashman "):
         raise HTTPException(status_code=401, detail="Missing or invalid Bashman auth headers")
-
 
 # -----------------------
 # Legacy endpoints (back-compat)
