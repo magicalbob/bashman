@@ -215,24 +215,39 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
     except Exception:
         raise HTTPException(401, "Signature verification failed")
 
+
+async def require_auth(request: Request):
+    if not REQUIRE_AUTH:
+        return
+    # allow bootstrap/health without auth
+    path = request.url.path
+    if path.startswith("/api/users") or path == "/health":
+        return
+    user = request.headers.get("X-Bashman-User")
+    auth = request.headers.get("Authorization", "")
+    if not user or not auth.startswith("Bashman "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Bashman auth headers")
+
+
 # -----------------------
 # Legacy endpoints (back-compat)
 # -----------------------
 
 @app.get("/scripts", deprecated=True)
-async def list_scripts_legacy(request: Request, database: DatabaseInterface = Depends(get_database)):
-    await _verify_signature_or_401(request, database, b"")
+async def list_scripts_legacy(
+    _auth: None = Depends(require_auth),
+    database: DatabaseInterface = Depends(get_database),
+):
     packages = await database.list_packages(status="quarantined", limit=1000)
     return JSONResponse(content=[pkg.name for pkg in packages])
 
 @app.post("/scripts", deprecated=True)
 async def upload_script_legacy(
-    request: Request,
     file: UploadFile = File(...),
+    _auth: None = Depends(require_auth),
     database: DatabaseInterface = Depends(get_database),
 ):
     content = await file.read()
-    await _verify_signature_or_401(request, database, content)
     validate_shell_script(content)
 
     existing = await database.get_package(file.filename)
@@ -248,7 +263,6 @@ async def upload_script_legacy(
         status=PackageStatus.QUARANTINED,
     )
     await database.create_package(package_metadata, content)
-
     return {"status": "quarantined", "filename": file.filename}
 
 # -----------------------
