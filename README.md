@@ -74,27 +74,9 @@ CLI Commands
 
 `bashman start [--host HOST] [--port PORT]`
 
-*(Legacy `stop`/`status` are not implemented.)*
-
-### Registry Taps
-
-`bashman tap add <name> <url>
-bashman tap remove <name>
-bashman tap list`
-
-*Planned; not implemented in current code.*
-
 ### Discover & Manage
 
 `bashman list                      # legacy: quarantined names from /scripts
-# Planned (HTTP available today): search/new/trending/info/install/upgrade/uninstall`
-
-### Authoring
-
-`# Planned: bashman create <package>
-bashman publish <path/to/script.sh>   # legacy upload to /scripts (quarantined)`
-
-> A single local registry is assumed today. Remote taps beyond static endpoints are planned.
 
 * * * * *
 
