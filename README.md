@@ -3,7 +3,9 @@ Bashman: The Package Manager for Bash Scripts
 
 ![Bashman Diagram](https://dev.ellisbs.co.uk/files/Bashman.png)
 
-**Bashman** brings a PyPI‑like experience to shell scripting: discover, install, and share Bash packages with full versioning, metadata, security scanning, and a unified registry model, now backed by a SQLite database for improved performance and reliability.
+**Bashman** brings a PyPI-like experience to shell scripting: discover, publish, and (eventually) install Bash packages with versioning and metadata. The current MVP ships a **FastAPI** backend with **SQLite** storage (content as BLOBs), **FTS5** search, basic **download stats**, and a slim **Typer** CLI for bootstrap and legacy upload/list flows.
+
+> **Status:** Server/API is usable; CLI covers `init`, `start`, and **legacy** `publish`/`list`. New `/api/*` endpoints are preferred for programmatic use. Request-signing is scaffolded; see **Auth** note under [Server Usage](#server-usage).
 
 * * * * *
 
@@ -16,7 +18,7 @@ Table of Contents
 
 3.  [Server Usage](#server-usage)
 
-4.  [Package Format](#package-format)
+4.  [Package metadata](#package-metadata)
 
 5.  [Roadmap](#roadmap)
 
@@ -27,24 +29,41 @@ Table of Contents
 Quickstart
 ----------
 
-1.  **Install Bashman**\
-    pip install bashman
+> If a `bashman` executable isn't on your PATH yet, you can run the CLI via:
+>
+> `python -m bashman.cli --help`
 
-2.  **Initialize your workspace**\
-    bashman init
+1.  **Install Bashman (local dev while private)**
 
-3.  **Start the registry server** (localhost:8000 by default)\
-    bashman start\
-    Logs → ~/.bashman_server.log\
-    PID → ~/.bashman_server.pid
+    `python -m pip install --upgrade pip
+    pip install -e .           # or: poetry install`
 
-4.  **Publish a package**\
-    bashman publish myscript 0.1.0 "A brief description"
+2.  **Initialize your workspace**
 
-5.  **Explore packages**\
-    bashman list\
-    bashman search backup\
-    bashman install myscript
+    `bashman init\
+      --nickname <you>\
+      --key-file ~/.ssh/id_ed25519\
+      --server-url http://127.0.0.1:8000`
+
+    The CLI default server URL is `https://bashman.ellisbs.co.uk`. For local dev, pass `--server-url` (or set `BASHMAN_SERVER_URL`).
+
+3.  **Start the registry server** (localhost:8000 by default)
+
+    `bashman start`
+
+    *(No built-in daemonization/log PID files; use a supervisor if needed.)*
+
+4.  **Publish a package (legacy endpoint)**
+
+    `bashman publish ./myscript.sh`
+
+    This uses the legacy `/scripts` flow and creates a **quarantined** package named after the filename with version `0.1.0`. For richer metadata, prefer the new HTTP form API below.
+
+5.  **List (legacy, quarantined names)**
+
+    `bashman list`
+
+    Programmatic list/search of **published** packages is available via HTTP: `/api/packages`, `/api/search`.
 
 * * * * *
 
@@ -53,90 +72,121 @@ CLI Commands
 
 ### Server
 
-bashman start [--host HOST] [--port PORT]\
-bashman stop\
-bashman status
+`bashman start [--host HOST] [--port PORT]`
+
+*(Legacy `stop`/`status` are not implemented.)*
 
 ### Registry Taps
 
-bashman tap add <name> <url>\
-bashman tap remove <name>\
-bashman tap list
+`bashman tap add <name> <url>
+bashman tap remove <name>
+bashman tap list`
+
+*Planned; not implemented in current code.*
 
 ### Discover & Manage
 
-bashman search <term> [--keywords] [--classifiers]\
-bashman trending [--period=weekly|monthly]\
-bashman new [--period=weekly|monthly]\
-bashman install <pkg>[@<version>]\
-bashman upgrade <pkg>[@<version>]\
-bashman uninstall <pkg>\
-bashman info <pkg>
+`bashman list                      # legacy: quarantined names from /scripts
+# Planned (HTTP available today): search/new/trending/info/install/upgrade/uninstall`
 
 ### Authoring
 
-bashman create <package> # scaffold new package\
-bashman publish <name> <version> "<description>"
+`# Planned: bashman create <package>
+bashman publish <path/to/script.sh>   # legacy upload to /scripts (quarantined)`
 
-> **Note:** Currently only a single local registry (<http://127.0.0.1:8000>) is supported. Remote taps must point to static JSON endpoints.
+> A single local registry is assumed today. Remote taps beyond static endpoints are planned.
 
 * * * * *
 
 Server Usage
 ------------
 
-The server provides:
+The server exposes a **JSON API** under `/api/*`. Legacy endpoints remain for the current CLI.
 
--   **Web UI** at `/`
+### Endpoints (current)
 
--   **JSON API** under `/api/packages`
+-   `GET /api/packages` --- list (filter with `status=published|quarantined`, `limit`, `offset`)
 
-Endpoints:
+-   `GET /api/packages/{name}` --- latest by `created_at` (or `?version=x.y.z`)
 
-GET /api/packages\
-GET /api/packages/{name}\
-POST /api/packages\
-POST /api/packages/form
+-   `GET /api/packages/{name}/versions` --- all versions
 
-Use `/api/v1/search` (coming soon) for IDE or CI integrations.
+-   `POST /api/packages` --- **multipart form** (create; see example below)
+
+-   `POST /api/packages/{name}/{version}/publish` --- set status to `published`
+
+-   `DELETE /api/packages/{name}/{version}` --- soft delete
+
+-   `GET /api/search?q=term&limit=50` --- full-text search (**published only**)
+
+-   `GET /api/trending?days=7&limit=10`
+
+-   `GET /api/packages/{name}/download` --- download (**published only**)
+
+-   `GET /api/stats`
+
+-   `POST /api/users` --- register `{nickname, public_key}`
+
+**Legacy endpoints (still used by the CLI):**
+
+-   `GET /scripts` --- list quarantined names
+
+-   `POST /scripts` --- upload file → creates `0.1.0` **quarantined** entry
+
+**Auth:** Request-signing headers are supported (Ed25519, RSA-PSS-SHA256, ECDSA-SHA256).\
+When `BASHMAN_REQUIRE_AUTH=1`, the **legacy** `/scripts` routes require presence of Bashman auth headers. The new `/api/*` routes currently **do not enforce** auth.
+
+### Create via HTTP (multipart form)
+
+Fields `keywords`, `dependencies`, `platforms` must be JSON-encoded strings.
+
+`BASE=http://127.0.0.1:8000
+
+curl -X POST "$BASE/api/packages"\
+  -F name=hello-world\
+  -F version=1.0.0\
+  -F description="A hello world script"\
+  -F author="Your Name"\
+  -F homepage="https://example.org"\
+  -F repository="https://git.example/you/hello-world"\
+  -F license="MIT"\
+  -F keywords='["hello","demo"]'\
+  -F dependencies='{}'\
+  -F platforms='[]'\
+  -F shell_version="bash 5"\
+  -F file=@./hello.sh`
+
+**Notes:**
+
+-   The server **validates the shebang** of the uploaded file.
+
+-   New packages enter **`quarantined`** status; publish via:
+
+    `curl -X POST "$BASE/api/packages/hello-world/1.0.0/publish"`
+
+-   "Latest" is selected by **`created_at`**, not by semver.
 
 * * * * *
 
-Package Format
---------------
+Package metadata
+----------------
 
-Every package root must include `bashman.json` with fields:
+**Current reality:** there is **no manifest file**. The server does **not** read `bashman.json`.
 
--   name: unique kebab-case identifier
+-   **Legacy upload (`/scripts`)**: package **name = filename**, **version = `0.1.0`**, status `quarantined`.
 
--   version: semantic version
+-   **New API (`POST /api/packages`)**: send metadata via **multipart form**.
 
--   description: short summary
+    -   **Required:** `name`, `version`, `description`, `file=@script.sh`
 
--   homepage: project URL
+    -   **Optional (strings):** `author`, `homepage`, `repository`, `license`, `shell_version`
 
--   repository: Git repo URL
+    -   **JSON-encoded strings:** `keywords='[]'`, `dependencies='{}'`, `platforms='[]'`
 
--   license: SPDX identifier
+-   Script content is stored **in SQLite as a BLOB**. No dependency resolution or installer exists yet.
 
--   keywords: list of terms for discovery
-
--   dependencies: mapping of binaries or other packages to semver constraints
-
--   platforms: supported OSes
-
--   shell: required shell version
-
-Typical layout:
-
-my-script/\
-├── bashman.json\
-├── bin/ # executables\
-│ └── myscript\
-├── lib/ # helpers\
-├── config/ # templates\
-├── install.sh # optional installer\
-└── uninstall.sh # optional uninstaller
+**Future (optional) manifest --- *not implemented***\
+A small `bashman.json` (name, version, description, etc.) may be introduced later. It's intentionally not documented as supported until code exists.
 
 * * * * *
 
@@ -144,57 +194,53 @@ Roadmap
 -------
 
 ### Phase 1: Core Infrastructure
-1. **Database abstraction layer** - SQLite backend with modular interface for future database options
-2. **API key-based identity system** - `bashman init` generates persistent user identity without personal data
-3. **Enhanced metadata storage** - automatic timestamps, author tracking, package descriptions
-4. **Time-based versioning** - monotonic version numbering with optional semantic tagging
+
+1.  **DB abstraction** --- SQLite backend (shipped), modular for future engines
+
+2.  **Public-key registration + optional request-signing** --- `bashman init` (shipped)
+
+3.  **Metadata storage** --- timestamps, author, descriptions (shipped)
+
+4.  **Versioning** --- semver accepted; "latest" by `created_at` (current behavior)
 
 ### Phase 2: User Experience
-5. **Multi-tap support** - connect to remote registries beyond local-only
-6. **Search API** - programmatic search for IDE/CI integrations  
-7. **Web UI enhancements** - improved package browsing and discovery
-8. **Package management** - proper install/uninstall workflows with dependency tracking
+
+1.  **Multi-tap support** *(planned)*
+
+2.  **Search API** --- **exists** (`/api/search`); CLI wrapper *planned*
+
+3.  **Web UI enhancements** *(planned)*
+
+4.  **Package management** --- install/uninstall + dependencies *(planned)*
 
 ### Phase 3: Security & Quality
-9. **Security pipeline foundation** - quarantine → scan → publish workflow
-10. **Basic linting integration** - ShellCheck and shfmt validation
-11. **Sandbox execution** - Docker-based script testing and validation
-12. **Package signing** - GPG-based package integrity verification
+
+1.  **Security pipeline** --- quarantine → scan → publish *(planned)*
+
+2.  **Linting** --- ShellCheck/shfmt *(planned)*
+
+3.  **Sandbox** --- Docker/bwrap/firejail *(planned)*
+
+4.  **Package signing** --- GPG verification *(planned)*
 
 ### Phase 4: Ecosystem
-13. **Functional testing suite** - Selenium-based end-to-end workflow testing
-14. **Advanced features** - badges, classifiers, trending packages
-15. **CI/CD integrations** - GitHub Actions, GitLab CI templates
-16. **Advanced security** - AI-assisted review (when mature enough to avoid false confidence)
 
-**Current Status:** Phase 1 ready to begin. Complete CI/CD pipeline operational with unit testing, quality scanning, artifact publishing, and containerized deployment.
+1.  **Functional tests** *(planned)*
 
-* * * * *
+2.  **Badges/classifiers/trending** *(planned)*
 
-## Backlog Ideas
+3.  **CI/CD integrations** *(planned)*
 
-These features are not yet prioritized but may be explored in future iterations:
+4.  **AI-assisted review** *(exploratory; when mature)*
 
-- **YAML Package Format Support**: Allow `bashman.yaml` as an alternative to `bashman.json` for greater flexibility and user preference.
-- **Auto Tap Discovery**: Federation via `.well-known/bashman.json` endpoints or domain-based conventions for dynamic registry discovery.
-- **Plugin System**:
-  - Custom install/uninstall hooks
-    - Tap source plugins (e.g. GitHub releases, GitLab snippets)
-    - **Alternative Script Sandboxing**: Support for non-Docker sandboxes using tools like `bwrap` or `firejail` for script isolation.
-    - **SPDX/SBOM Integration**: Emit SPDX-compliant Software Bill of Materials (SBOM) for packages to support traceability and compliance.
-    - **Template-Driven Package Scaffolding**: Allow reusable templates for common Bash package types (e.g. CLI tools, config generators).
-    - **Scheduled Tap Syncing**: Automatically refresh remote taps on a schedule for freshness without manual invocation.
+**Current Status:** Phase 1 **in progress**. Core DB + API implemented; CLI covers `init`, `start`, and legacy `publish`/`list`.
 
-    These backlog items are intended as inspiration or rainy-day enhancements and are not yet on the formal roadmap.
 * * * * *
 
 Contributing
 ------------
 
--   See CODE_OF_CONDUCT.md
+-   See `CODE_OF_CONDUCT.md` and `SECURITY.md`
 
--   See SECURITY.md
-
--   Report issues and MRs at <https://gitlab.ellisbs.co.uk/ian/bashman/-/issues>
-
-We triage by labels: good first issue - enhancement - security - documentation
+-   Issues/MRs: [https://gitlab.ellisbs.co.uk/ian/bashman/-/issues](https://gitlab.ellisbs.co.uk/ian/bashman/-/issues?utm_source=chatgpt.com)\
+    Labels: `good first issue` - `enhancement` - `security` - `documentation`
