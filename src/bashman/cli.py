@@ -393,12 +393,28 @@ def publish(ctx: typer.Context, path: str):
         raise typer.Exit(1)
 
 @app.command(name="list")
-def _list(ctx: typer.Context):
-    """List scripts in quarantine (signed if possible)."""
+def _list(ctx: typer.Context,
+          status: str = typer.Option(
+              "quarantined",
+              "--status",
+              help="Which status to list: 'quarantined' (legacy) or 'published'.",
+          )):
+    """List packages by status. Default shows legacy quarantined uploads."""
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
 
     try:
-        url = f"{server}/scripts"
+        status = (status or "quarantined").lower()
+        if status not in ("quarantined", "published"):
+            typer.echo("Error: --status must be 'quarantined' or 'published'", err=True)
+            raise typer.Exit(2)
+
+        if status == "quarantined":
+            # Legacy endpoint used by old flows/tests
+            url = f"{server}/scripts"
+        else:
+            # Modern API for published packages
+            url = f"{server}/api/packages?status=published&limit=1000"
+
         headers = build_signed_headers(ctx, "GET", url, b"")
         try:
             if headers:
@@ -408,8 +424,15 @@ def _list(ctx: typer.Context):
         except TypeError:
             resp = httpx.get(url)
         resp.raise_for_status()
-        for name in resp.json():
-            typer.echo(name)
+
+        if status == "quarantined":
+            for name in resp.json():
+                typer.echo(name)
+        else:
+            for pkg in resp.json():
+                # match legacy UX (names only); could also print versions later
+                typer.echo(pkg.get("name", ""))
+
     except httpx.HTTPStatusError as e:
         typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
         raise typer.Exit(1)
