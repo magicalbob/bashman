@@ -3,6 +3,7 @@ import os
 import time
 import json
 import hashlib
+import asyncio
 from base64 import b64decode
 from email.utils import parsedate_to_datetime
 from datetime import timezone
@@ -48,6 +49,7 @@ DB_PATH = os.environ.get("BASHMAN_DB_PATH", "bashman.db")
 REQUIRE_AUTH = os.environ.get("BASHMAN_REQUIRE_AUTH", "0") == "1"
 MAX_SKEW_SECONDS = 300  # 5 minutes for clock skew & nonce window
 ALGORITHM_MISMATCH = "Algorithm mismatch"
+AUTO_PUBLISH = os.environ.get("BASHMAN_AUTO_PUBLISH", "0") == "1"
 
 # -----------------------
 # Data structures for auth
@@ -65,6 +67,8 @@ class SignatureData(NamedTuple):
 # -----------------------
 db: Optional[DatabaseInterface] = None
 _NONCE_CACHE: dict[tuple[str, str], float] = {}
+_PUBLISHER_TASK: Optional[asyncio.Task] = None
+_STOP_EVENT: Optional[asyncio.Event] = None
 
 # -----------------------
 # Shell validation
@@ -206,6 +210,53 @@ async def _fetch_user_public_key(database: DatabaseInterface, nickname: str) -> 
         return None
     return None
 
+
+async def _enqueue_publish_job(database: DatabaseInterface, pkg_id: int, name: str, version: str) -> None:
+    """Best-effort enqueue using SQLiteDatabase internals; ignore if not available."""
+    try:
+        from .database.sqlite import SQLiteDatabase  # type: ignore
+        if isinstance(database, SQLiteDatabase):
+            await database.enqueue_publish(int(pkg_id), name, version)  # type: ignore[attr-defined]
+    except Exception:
+        # non-fatal
+        pass
+
+async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event):
+    """Background loop: claim pending jobs and publish them automatically."""
+    try:
+        from .database.sqlite import SQLiteDatabase  # type: ignore
+        if not isinstance(database, SQLiteDatabase):
+            return
+    except Exception:
+        return
+
+    # Periodic poll; tiny sleeps keep shutdown responsive.
+    while not stop_event.is_set():
+        try:
+            job = await database.claim_next_publish_job()  # type: ignore[attr-defined]
+        except Exception:
+            job = None
+        if not job:
+            # nothing to do
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        job_id, _pkg_id, name, version, _attempts = job
+        try:
+            ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
+            if ok:
+                await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
+            else:
+                await database.fail_publish_job(job_id, "Package/version not found")  # type: ignore[attr-defined]
+        except Exception as e:
+            try:
+                await database.fail_publish_job(job_id, str(e))  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
 def _parse_alg(alg: str) -> Optional[str]:
     if alg == "ed25519":
         return "ed25519"
@@ -248,10 +299,23 @@ def _replay_ok(user: str, nonce: str) -> bool:
 async def lifespan(app: FastAPI):
     """Application lifespan management (init/close DB)."""
     global db
+    global _PUBLISHER_TASK, _STOP_EVENT
     db = await DatabaseFactory.create_and_initialize("sqlite", db_path=DB_PATH)
+    # Start background publisher if enabled
+    if AUTO_PUBLISH and db is not None:
+        _STOP_EVENT = asyncio.Event()
+        _PUBLISHER_TASK = asyncio.create_task(_publisher_loop(db, _STOP_EVENT))
     try:
         yield
     finally:
+        # Stop background publisher
+        if _STOP_EVENT is not None:
+            _STOP_EVENT.set()
+        if _PUBLISHER_TASK is not None:
+            try:
+                await asyncio.wait_for(_PUBLISHER_TASK, timeout=2.0)
+            except Exception:
+                _PUBLISHER_TASK.cancel()
         if db:
             await db.close()
 
@@ -332,6 +396,10 @@ async def upload_script_legacy(
         status=PackageStatus.QUARANTINED,
     )
     await database.create_package(package_metadata, content)
+    # Re-fetch latest to obtain the inserted row (or return from create if you adapt it)
+    created = await database.get_package(file.filename, "0.1.0")
+    if created and created.id is not None:
+        await _enqueue_publish_job(database, created.id, created.name, created.version)
     return {"status": "quarantined", "filename": file.filename}
 
 # -----------------------
@@ -444,6 +512,11 @@ async def create_package(
         status=PackageStatus.QUARANTINED,
     )
     pkg_id = await database.create_package(pkg, content)
+    # Enqueue for auto-publish (best-effort) — processed only if BASHMAN_AUTO_PUBLISH=1
+    try:
+        await _enqueue_publish_job(database, int(pkg_id), name, version)
+    except Exception:
+        pass
 
     return {
         "id": pkg_id,

@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 import json
 import hashlib
+from typing import Optional as _Opt
 
 from .base import DatabaseInterface
 from ..models import PackageMetadata
@@ -102,6 +103,21 @@ class SQLiteDatabase(DatabaseInterface):
 
         CREATE INDEX IF NOT EXISTS idx_downloads_package_id ON package_downloads(package_id);
         CREATE INDEX IF NOT EXISTS idx_downloads_date ON package_downloads(downloaded_at);
+
+        -- Simple publish queue
+        CREATE TABLE IF NOT EXISTS publish_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            package_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',  -- pending | processing | done | failed
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            enqueued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (package_id) REFERENCES packages (id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pubq_status_enqueued ON publish_queue(status, enqueued_at);
         """
 
         await self._db.executescript(schema)
@@ -145,6 +161,59 @@ class SQLiteDatabase(DatabaseInterface):
         cursor = await self._db.execute(query, values)
         await self._db.commit()
         return str(cursor.lastrowid)
+
+    # -----------------------
+    # Queue helpers (internal API; not on the abstract interface)
+    # -----------------------
+    async def enqueue_publish(self, package_id: int, name: str, version: str) -> None:
+        """Enqueue a package for auto-publish (best-effort)."""
+        try:
+            await self._db.execute(
+                "INSERT INTO publish_queue (package_id, name, version) VALUES (?, ?, ?)",
+                (package_id, name, version),
+            )
+            await self._db.commit()
+        except Exception:
+            # Don't fail the main request path on queue errors
+            await self._db.rollback()
+            return
+
+    async def claim_next_publish_job(self) -> _Opt[Tuple[int, int, str, str, int]]:
+        """
+        Claim the next pending job: returns (job_id, package_id, name, version, attempts)
+        or None if nothing to do. (Best-effort; single-process races are negligible here.)
+        """
+        cur = await self._db.execute(
+            "SELECT id, package_id, name, version, attempts "
+            "FROM publish_queue WHERE status='pending' ORDER BY enqueued_at LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        job_id = row[0]
+        upd = await self._db.execute(
+            "UPDATE publish_queue SET status='processing', attempts=attempts+1, "
+            "updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
+            (job_id,),
+        )
+        await self._db.commit()
+        if upd.rowcount == 0:
+            return None
+        return row  # (id, package_id, name, version, attempts)
+
+    async def complete_publish_job(self, job_id: int) -> None:
+        await self._db.execute(
+            "UPDATE publish_queue SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (job_id,),
+        )
+        await self._db.commit()
+
+    async def fail_publish_job(self, job_id: int, error: str) -> None:
+        await self._db.execute(
+            "UPDATE publish_queue SET status='failed', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error[:500], job_id),
+        )
+        await self._db.commit()
 
     async def get_package(self, 
                           name: str, 
