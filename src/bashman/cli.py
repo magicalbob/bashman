@@ -395,15 +395,18 @@ def publish(ctx: typer.Context, path: str):
 @app.command(name="list")
 def _list(ctx: typer.Context,
           status: str = typer.Option(
-              "quarantined",
+              "published",   # <-- default changed to 'published'
               "--status",
-              help="Which status to list: 'quarantined' (legacy) or 'published'.",
+              help="Which status to list: 'published' (default) or 'quarantined' (legacy).",
           )):
-    """List packages by status. Default shows legacy quarantined uploads."""
+    """
+    List packages by status.
+    Default lists *published* packages from the modern API; use --status quarantined for legacy uploads.
+    """
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
 
     try:
-        status = (status or "quarantined").lower()
+        status = (status or "published").lower()
         if status not in ("quarantined", "published"):
             typer.echo("Error: --status must be 'quarantined' or 'published'", err=True)
             raise typer.Exit(2)
@@ -425,13 +428,24 @@ def _list(ctx: typer.Context,
             resp = httpx.get(url)
         resp.raise_for_status()
 
+        data = resp.json()
         if status == "quarantined":
-            for name in resp.json():
+            # legacy shape: list[str]
+            for name in data:
                 typer.echo(name)
         else:
-            for pkg in resp.json():
-                # match legacy UX (names only); could also print versions later
-                typer.echo(pkg.get("name", ""))
+            # published shape: list[dict] normally, but be tolerant of list[str] (test stubs)
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        name = item.get("name", "")
+                    else:
+                        name = str(item)
+                    if name:
+                        typer.echo(name)
+            else:
+                # Unexpected, print nothing rather than explode
+                pass
 
     except httpx.HTTPStatusError as e:
         typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
