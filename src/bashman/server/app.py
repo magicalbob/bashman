@@ -223,6 +223,7 @@ async def _enqueue_publish_job(database: DatabaseInterface, pkg_id: int, name: s
 
 async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event):
     """Background loop: claim pending jobs and publish them automatically."""
+    # Guard: only run when using the SQLite backend (tests rely on this)
     try:
         from .database.sqlite import SQLiteDatabase  # type: ignore
         if not isinstance(database, SQLiteDatabase):
@@ -230,32 +231,44 @@ async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event
     except Exception:
         return
 
-    # Periodic poll; tiny sleeps keep shutdown responsive.
-    while not stop_event.is_set():
+    async def _wait_for_stop(timeout: float = 1.0) -> None:
+        """Sleep a bit, but wake promptly on shutdown."""
         try:
-            job = await database.claim_next_publish_job()  # type: ignore[attr-defined]
-        except Exception:
-            job = None
-        if not job:
-            # nothing to do
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
-            continue
+            await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
 
+    async def _claim_job() -> Optional[Tuple[Any, ...]]:
+        """Try to claim the next job; return None on any error or no job."""
+        try:
+            return await database.claim_next_publish_job()  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+    async def _process_job(job: Tuple[Any, ...]) -> None:
+        """Publish the package for a claimed job, handling all failure paths."""
         job_id, _pkg_id, name, version, _attempts = job
         try:
             ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
             if ok:
                 await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
             else:
+                # Package/version not found; record as failed
                 await database.fail_publish_job(job_id, "Package/version not found")  # type: ignore[attr-defined]
         except Exception as e:
+            # Best-effort failure record; swallow secondary errors
             try:
                 await database.fail_publish_job(job_id, str(e))  # type: ignore[attr-defined]
             except Exception:
                 pass
+
+    # Main loop: poll, process, or briefly wait
+    while not stop_event.is_set():
+        job = await _claim_job()
+        if not job:
+            await _wait_for_stop(1.0)
+            continue
+        await _process_job(job)
 
 def _parse_alg(alg: str) -> Optional[str]:
     if alg == "ed25519":
