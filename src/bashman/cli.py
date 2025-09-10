@@ -9,6 +9,7 @@ from base64 import b64encode
 from urllib.parse import urlsplit
 from email.utils import formatdate
 from pathlib import Path
+from typing import Iterable, List, Union, Dict, Any
 
 import typer
 import httpx
@@ -20,6 +21,7 @@ DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
 # Back-compat for tests and older callers
 DEFAULT_URL = DEFAULT_SERVER_URL
 SERVER_URL_HELP = "URL of the Bashman server"
+VALID_STATUSES = ("published", "quarantined")
 
 # Shell validation regex
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
@@ -392,66 +394,92 @@ def publish(ctx: typer.Context, path: str):
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
 
+def _validate_status(status: str) -> str:
+    s = (status or "published").lower()
+    if s not in VALID_STATUSES:
+        typer.echo("Error: --status must be 'quarantined' or 'published'", err=True)
+        raise typer.Exit(2)
+    return s
+
+def _url_for(server: str, status: str) -> str:
+    if status == "quarantined":
+        # Legacy endpoint used by old flows/tests
+        return f"{server}/scripts"
+    # Modern API for published packages
+    return f"{server}/api/packages?status=published&limit=1000"
+
+def _fetch_json(url: str, headers: Dict[str, str] | None) -> Any:
+    """
+    Fetch JSON with a compatibility fallback:
+    if a monkeypatched/legacy httpx.get doesn't accept headers=, retry without it.
+    """
+    try:
+        resp = httpx.get(url, headers=headers)
+    except TypeError:
+        # Back-compat for test stubs / older clients that don't accept headers kwarg
+        resp = httpx.get(url)
+    resp.raise_for_status()
+    return resp.json()
+
+def _names_from_legacy(data: Any) -> List[str]:
+    # legacy shape: list[str]
+    if isinstance(data, list):
+        return [str(x) for x in data if str(x)]
+    return []
+
+def _names_from_published(data: Any) -> List[str]:
+    """
+    published shape: list[dict] normally, but be tolerant of list[str] (test stubs)
+    """
+    if not isinstance(data, list):
+        return []
+    names: List[str] = []
+    for item in data:
+        if isinstance(item, dict):
+            name = item.get("name", "")
+        else:
+            name = str(item)
+        if name:
+            names.append(name)
+    return names
+
 @app.command(name="list")
-def _list(ctx: typer.Context,
-          status: str = typer.Option(
-              "published",   # <-- default changed to 'published'
-              "--status",
-              help="Which status to list: 'published' (default) or 'quarantined' (legacy).",
-          )):
+def _list(
+    ctx: typer.Context,
+    status: str = typer.Option(
+        "published",
+        "--status",
+        help="Which status to list: 'published' (default) or 'quarantined' (legacy).",
+    ),
+):
     """
     List packages by status.
     Default lists *published* packages from the modern API; use --status quarantined for legacy uploads.
     """
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
+    status = _validate_status(status)
+    url = _url_for(server, status)
 
     try:
-        status = (status or "published").lower()
-        if status not in ("quarantined", "published"):
-            typer.echo("Error: --status must be 'quarantined' or 'published'", err=True)
-            raise typer.Exit(2)
-
-        if status == "quarantined":
-            # Legacy endpoint used by old flows/tests
-            url = f"{server}/scripts"
-        else:
-            # Modern API for published packages
-            url = f"{server}/api/packages?status=published&limit=1000"
-
-        headers = build_signed_headers(ctx, "GET", url, b"")
-        try:
-            if headers:
-                resp = httpx.get(url, headers=headers)
-            else:
-                resp = httpx.get(url)
-        except TypeError:
-            resp = httpx.get(url)
-        resp.raise_for_status()
-
-        data = resp.json()
-        if status == "quarantined":
-            # legacy shape: list[str]
-            for name in data:
-                typer.echo(name)
-        else:
-            # published shape: list[dict] normally, but be tolerant of list[str] (test stubs)
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, dict):
-                        name = item.get("name", "")
-                    else:
-                        name = str(item)
-                    if name:
-                        typer.echo(name)
-            else:
-                # Unexpected, print nothing rather than explode
-                pass
+        headers = build_signed_headers(ctx, "GET", url, b"") or None
+        data = _fetch_json(url, headers)
+        names = (
+            _names_from_legacy(data)
+            if status == "quarantined"
+            else _names_from_published(data)
+        )
+        for name in names:
+            typer.echo(name)
 
     except httpx.HTTPStatusError as e:
         typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while listing scripts: {e}", err=True)
+        raise typer.Exit(1)
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        # Be tolerant of odd shapes but still report unexpected parse issues
+        typer.echo(f"✗ Failed to parse server response: {e}", err=True)
         raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
