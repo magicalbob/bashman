@@ -7,8 +7,8 @@ import asyncio
 from base64 import b64decode
 from email.utils import parsedate_to_datetime
 from datetime import timezone
-from contextlib import asynccontextmanager
-from typing import List, Optional, NamedTuple
+from contextlib import suppress, asynccontextmanager
+from typing import Any, List, Optional, NamedTuple, Tuple
 
 from fastapi import (
     FastAPI,
@@ -221,15 +221,56 @@ async def _enqueue_publish_job(database: DatabaseInterface, pkg_id: int, name: s
         # non-fatal
         pass
 
+def _supports_publish_jobs(db: Any) -> bool:
+    """Duck-typed capability check; avoids import/instance checks."""
+    required = (
+        "claim_next_publish_job",
+        "complete_publish_job",
+        "fail_publish_job",
+        "update_package",
+    )
+    return all(hasattr(db, name) for name in required)
+
+async def _safe_fail_job(database: Any, job_id: Any, msg: str) -> None:
+    """Best-effort failure recording; swallow secondary errors."""
+    with suppress(Exception):
+        await database.fail_publish_job(job_id, msg)  # type: ignore[attr-defined]
+
 async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event):
     """Background loop: claim pending jobs and publish them automatically."""
-    # Guard: only run when using the SQLite backend (tests rely on this)
-    try:
-        from .database.sqlite import SQLiteDatabase  # type: ignore
-        if not isinstance(database, SQLiteDatabase):
-            return
-    except Exception:
+    # Guard quickly by capability rather than importing SQLiteDatabase
+    if not _supports_publish_jobs(database):
         return
+
+    while not stop_event.is_set():
+        # Try to claim the next job; ignore any errors and treat as 'no job'
+        try:
+            job: Optional[Tuple[Any, ...]] = await database.claim_next_publish_job()  # type: ignore[attr-defined]
+        except Exception:
+            job = None
+
+        if not job:
+            # Brief sleep that's interruptible by stop_event
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        job_id, _pkg_id, name, version, _attempts = job
+
+        try:
+            ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
+        except Exception as e:
+            await _safe_fail_job(database, job_id, str(e))
+            continue
+
+        if ok:
+            # Completing a job shouldn't bring down the loop if it fails
+            with suppress(Exception):
+                await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
+        else:
+            await _safe_fail_job(database, job_id, "Package/version not found")
 
     async def _wait_for_stop(timeout: float = 1.0) -> None:
         """Sleep a bit, but wake promptly on shutdown."""
