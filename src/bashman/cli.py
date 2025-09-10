@@ -477,8 +477,7 @@ def _list(
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while listing scripts: {e}", err=True)
         raise typer.Exit(1)
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        # Be tolerant of odd shapes but still report unexpected parse issues
+    except ValueError as e:
         typer.echo(f"✗ Failed to parse server response: {e}", err=True)
         raise typer.Exit(1)
     except Exception as e:
