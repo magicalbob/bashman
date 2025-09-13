@@ -215,8 +215,8 @@ class SQLiteDatabase(DatabaseInterface):
         )
         await self._db.commit()
 
-    async def get_package(self, 
-                          name: str, 
+    async def get_package(self,
+                          name: str,
                           version: Optional[str] = None) -> Optional[PackageMetadata]:
         """Get package metadata without content"""
         if version:
@@ -247,8 +247,8 @@ class SQLiteDatabase(DatabaseInterface):
             return self._row_to_package_metadata(row)
         return None
 
-    async def get_package_content(self, 
-                                  name: str, 
+    async def get_package_content(self,
+                                  name: str,
                                   version: Optional[str] = None) -> Optional[bytes]:
         """Get only the script content"""
         if version:
@@ -272,7 +272,7 @@ class SQLiteDatabase(DatabaseInterface):
         return row[0] if row else None
 
     async def get_package_with_content(self,
-                  name: str, 
+                  name: str,
                   version: Optional[str] = None) -> Optional[Tuple[PackageMetadata, bytes]]:
         """Get both package metadata and content"""
         if version:
@@ -298,9 +298,9 @@ class SQLiteDatabase(DatabaseInterface):
             return metadata, content
         return None
 
-    async def list_packages(self, 
-                            limit: int = 100, 
-                            offset: int = 0, 
+    async def list_packages(self,
+                            limit: int = 100,
+                            offset: int = 0,
                             status: Optional[str] = None) -> List[PackageMetadata]:
         """List packages with pagination and optional status filtering"""
         if status:

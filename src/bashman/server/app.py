@@ -86,21 +86,21 @@ def _extract_signature_headers(request: Request) -> Optional[tuple[str, str, str
     nonce = request.headers.get("X-Bashman-Nonce")
     alg = request.headers.get("X-Bashman-Alg")
     auth = request.headers.get("Authorization", "")
-    
+
     if not (user and date_str and nonce and auth.startswith("Bashman ")):
         return None
-    
+
     return user, date_str, nonce, alg or "", auth
 
 def _validate_signature_timing(date_str: str, user: str, nonce: str) -> None:
     """Validate signature timing and prevent replay attacks."""
     if not _within_skew(date_str):
         raise HTTPException(401, "Signature date outside allowed skew")
-    
+
     if not _replay_ok(user, nonce):
         raise HTTPException(401, "Replay detected")
 
-def _prepare_signature_data(request: Request, user: str, date_str: str, nonce: str, 
+def _prepare_signature_data(request: Request, user: str, date_str: str, nonce: str,
                           alg: str, auth: str, content: bytes | None) -> SignatureData:
     """Prepare signature data for verification."""
     parts = request.url
@@ -110,7 +110,7 @@ def _prepare_signature_data(request: Request, user: str, date_str: str, nonce: s
     msg = _canonical_bytes(request.method, path_qs, date_str, nonce, body_hex)
     sig = b64decode(auth.split(" ", 1)[1].strip())
     algorithm = _parse_alg(alg) or ""
-    
+
     return SignatureData(user, date_str, nonce, algorithm, sig, msg)
 
 def _verify_ed25519_signature(pub: ed25519.Ed25519PublicKey, sig_data: SignatureData) -> None:
@@ -161,10 +161,10 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
         return
 
     user, date_str, nonce, alg, auth = header_data
-    
+
     # Validate timing and prevent replays
     _validate_signature_timing(date_str, user, nonce)
-    
+
     # Check crypto support
     if load_ssh_public_key is None and REQUIRE_AUTH:
         raise HTTPException(500, "Server missing crypto support")
@@ -180,10 +180,10 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
         # Load public key and prepare signature data
         public_key = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
         sig_data = _prepare_signature_data(request, user, date_str, nonce, alg, auth, content)
-        
+
         # Perform verification
         _perform_signature_verification(public_key, sig_data)
-        
+
     except HTTPException:
         raise
     except Exception:
