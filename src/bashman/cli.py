@@ -42,6 +42,12 @@ def load_config() -> dict:
     except Exception:
         return {}
 
+def save_config(cfg: dict) -> None:
+    cfg_file = get_config_file()
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg_file, "w") as f:
+        json.dump(cfg, f, indent=2)
+
 # ---- Key utilities ----
 def validate_private_key(key_path: str) -> tuple[bool, str]:
     """
@@ -262,6 +268,7 @@ def main(
         "server_url": resolved_server,
         "nickname": cfg.get("nickname"),
         "private_key_path": cfg.get("private_key_path"),
+        "install_dir": cfg.get("install_dir"),
     }
 
 # ---- Commands ----
@@ -270,8 +277,9 @@ def init(
     nickname: str = typer.Option(..., "--nickname", help="User nickname"),
     key_file: str = typer.Option(..., "--key-file", help="Path to private key file"),
     server_url: str = typer.Option(DEFAULT_SERVER_URL, "--server-url", help=SERVER_URL_HELP),
+    install_dir: str = typer.Option(..., "--install-dir", help="Default directory to install scripts (will be created if missing)"),
 ):
-    """Initialize Bashman configuration with server URL, user nickname, and private key."""
+    """Initialize Bashman configuration with server URL, user nickname, private key, and default install dir."""
     config_file = get_config_file()
     config_dir = get_config_dir()
     if config_file.exists():
@@ -287,6 +295,16 @@ def init(
         typer.echo(f"{error_msg}", err=True)
 
     absolute_key_path = os.path.abspath(expanded_key_path)
+    install_dir_abs = os.path.abspath(os.path.expanduser(install_dir))
+    try:
+        Path(install_dir_abs).mkdir(parents=True, exist_ok=True)
+        # basic writability check
+        if not os.access(install_dir_abs, os.W_OK | os.X_OK):
+            typer.echo(f"✗ Install dir not writable: {install_dir_abs}", err=True)
+            raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Could not prepare install dir '{install_dir_abs}': {e}", err=True)
+        raise typer.Exit(1)
 
     # Register the user on the server
     typer.echo("Registering user on the server...")
@@ -317,7 +335,12 @@ def init(
 
     # Write config
     config_dir.mkdir(parents=True, exist_ok=True)
-    config = {"server_url": server_url, "nickname": nickname, "private_key_path": absolute_key_path}
+    config = {
+        "server_url": server_url,
+        "nickname": nickname,
+        "private_key_path": absolute_key_path,
+        "install_dir": install_dir_abs,
+    }
     with open(config_file, "w") as f:
         json.dump(config, f, indent=2)
 
@@ -325,6 +348,7 @@ def init(
     typer.echo(f"User: {nickname}")
     typer.echo(f"Key: {absolute_key_path}")
     typer.echo(f"Server: {server_url}")
+    typer.echo(f"Install dir: {install_dir_abs}")
 
 @app.command()
 def start(host: str = "127.0.0.1", port: int = 8000):
@@ -421,6 +445,14 @@ def _fetch_json(url: str, headers: Dict[str, str] | None) -> Any:
     resp.raise_for_status()
     return resp.json()
 
+def _fetch_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
+    try:
+        resp = httpx.get(url, headers=headers)
+    except TypeError:
+        resp = httpx.get(url)
+    resp.raise_for_status()
+    return getattr(resp, "content", b"") or b""
+
 def _names_from_legacy(data: Any) -> List[str]:
     # legacy shape: list[str]
     if isinstance(data, list):
@@ -442,6 +474,25 @@ def _names_from_published(data: Any) -> List[str]:
         if name:
             names.append(name)
     return names
+
+def _safe_filename(name: str) -> str:
+    base = os.path.basename(name)
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base)
+    return cleaned or "script"
+
+def _ensure_dest_dir(dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    if not dest.is_dir():
+        raise RuntimeError(f"Install destination is not a directory: {dest}")
+    if not os.access(dest, os.W_OK | os.X_OK):
+        raise RuntimeError(f"Install destination not writable: {dest}")
+
+def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp") if path.suffix else Path(str(path) + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
 
 @app.command(name="list")
 def _list(
@@ -483,6 +534,104 @@ def _list(
     except Exception as e:
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
+
+@app.command()
+def install(
+    ctx: typer.Context,
+    name: str,
+    version: str = typer.Option(None, "--version", "-v", help="Specific version to install"),
+    dest: str = typer.Option(None, "--dest", help="Override install directory (defaults to init's --install-dir)"),
+    as_name: str = typer.Option(None, "--as", help="Install under a different filename"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite if file exists"),
+    mode: str = typer.Option(None, "--mode", help="File mode in octal, e.g. 755 (default 755)"),
+    no_verify: bool = typer.Option(False, "--no-verify", help="Skip SHA256 verification against server metadata"),
+):
+    """
+    Install a published package to your install directory.
+    """
+    cfg = ctx.obj or {}
+    server = cfg.get("server_url", DEFAULT_SERVER_URL)
+
+    # Resolve destination directory
+    dest_dir = os.path.abspath(os.path.expanduser(dest or cfg.get("install_dir", "")))
+    if not dest_dir:
+        typer.echo("✗ No install directory configured. Re-run `bashman init --install-dir PATH` or pass --dest.", err=True)
+        raise typer.Exit(2)
+    try:
+        dest_path = Path(dest_dir)
+        _ensure_dest_dir(dest_path)
+    except Exception as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1)
+
+    # Determine filename
+    target_name = as_name or _safe_filename(name)
+    target_file = dest_path / target_name
+    if target_file.exists() and not force:
+        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
+        raise typer.Exit(3)
+
+    # Fetch package metadata (to check status and get hash)
+    meta_url = f"{server}/api/packages/{name}"
+    if version:
+        meta_url += f"?version={version}"
+    headers = build_signed_headers(ctx, "GET", meta_url, b"") or None
+    try:
+        meta = _fetch_json(meta_url, headers)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
+        raise typer.Exit(1)
+
+    status = str(meta.get("status", "")).lower()
+    if status != "published":
+        typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
+        raise typer.Exit(4)
+
+    # Download content
+    dl_url = f"{server}/api/packages/{name}/download"
+    if version:
+        dl_url += f"?version={version}"
+    headers = build_signed_headers(ctx, "GET", dl_url, b"") or None
+    try:
+        data = _fetch_bytes(dl_url, headers)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to download: {e}", err=True)
+        raise typer.Exit(1)
+    if not data:
+        typer.echo("✗ Empty download from server", err=True)
+        raise typer.Exit(1)
+
+    # Verify hash unless skipped
+    if not no_verify:
+        want = (meta.get("file_hash") or "").lower()
+        got = hashlib.sha256(data).hexdigest().lower()
+        if want and got != want:
+            typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
+            raise typer.Exit(5)
+
+    # Parse mode
+    file_mode = 0o755
+    if mode:
+        try:
+            file_mode = int(mode, 8)
+        except Exception:
+            typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
+            raise typer.Exit(2)
+
+    # Write atomically and chmod
+    try:
+        _atomic_write(target_file, data, file_mode)
+    except Exception as e:
+        typer.echo(f"✗ Failed to write {target_file}: {e}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"✓ Installed {name}{(':'+version) if version else ''} → {target_file}")
 
 if __name__ == "__main__":
     app()
