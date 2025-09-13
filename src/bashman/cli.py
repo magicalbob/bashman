@@ -48,6 +48,14 @@ def save_config(cfg: dict) -> None:
     with open(cfg_file, "w") as f:
         json.dump(cfg, f, indent=2)
 
+def default_install_dir() -> str:
+    """Conservative cross-platform default install directory."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return os.path.join(base, "bashman", "bin")
+    # POSIX/macOS
+    return str(Path.home() / ".local" / "bin")
+
 # ---- Key utilities ----
 def validate_private_key(key_path: str) -> tuple[bool, str]:
     """
@@ -277,9 +285,12 @@ def init(
     nickname: str = typer.Option(..., "--nickname", help="User nickname"),
     key_file: str = typer.Option(..., "--key-file", help="Path to private key file"),
     server_url: str = typer.Option(DEFAULT_SERVER_URL, "--server-url", help=SERVER_URL_HELP),
-    install_dir: str = typer.Option(..., "--install-dir", help="Default directory to install scripts (will be created if missing)"),
+    install_dir: str | None = typer.Option(None, "--install-dir", help="Default directory to install scripts (will be created if missing)"),
 ):
-    """Initialize Bashman configuration with server URL, user nickname, private key, and default install dir."""
+    """
+    Initialize Bashman configuration with server URL, user nickname, private key,
+    and a default install dir (defaults to ~/.local/bin on POSIX/macOS).
+    """
     config_file = get_config_file()
     config_dir = get_config_dir()
     if config_file.exists():
@@ -295,7 +306,10 @@ def init(
         typer.echo(f"{error_msg}", err=True)
 
     absolute_key_path = os.path.abspath(expanded_key_path)
-    install_dir_abs = os.path.abspath(os.path.expanduser(install_dir))
+
+    # Pick default install dir if not provided (keeps backward compatibility with existing tests/automation)
+    chosen_install_dir = install_dir or default_install_dir()
+    install_dir_abs = os.path.abspath(os.path.expanduser(chosen_install_dir))
     try:
         Path(install_dir_abs).mkdir(parents=True, exist_ok=True)
         # basic writability check
