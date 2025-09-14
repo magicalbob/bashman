@@ -101,7 +101,7 @@ def _validate_signature_timing(date_str: str, user: str, nonce: str) -> None:
         raise HTTPException(401, "Replay detected")
 
 def _prepare_signature_data(request: Request, user: str, date_str: str, nonce: str,
-                          alg: str, auth: str, content: bytes | None) -> SignatureData:
+                            alg: str, auth: str, content: bytes | None) -> SignatureData:
     """Prepare signature data for verification."""
     parts = request.url
     path_qs = parts.path + (("?" + parts.query) if parts.query else "")
@@ -148,6 +148,21 @@ def _perform_signature_verification(public_key: object, sig_data: SignatureData)
         if REQUIRE_AUTH:
             raise HTTPException(401, "Unsupported public key type")
 
+def _verify_with_public_key(pubkey_text: str, request: Request, user: str, date_str: str,
+                            nonce: str, alg: str, auth: str, content: bytes | None) -> None:
+    """
+    Load the SSH public key, construct SignatureData and verify.
+    Isolated to shave branches from _verify_signature_or_401.
+    """
+    try:
+        public_key = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
+        sig_data = _prepare_signature_data(request, user, date_str, nonce, alg, auth, content)
+        _perform_signature_verification(public_key, sig_data)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(401, "Signature verification failed")
+
 async def _verify_signature_or_401(request: Request, database: DatabaseInterface, content: bytes | None) -> None:
     """
     Verify Bashman signature if present; if REQUIRE_AUTH is on, enforce presence and validity.
@@ -176,18 +191,8 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
             raise HTTPException(401, "Unknown user")
         return
 
-    try:
-        # Load public key and prepare signature data
-        public_key = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
-        sig_data = _prepare_signature_data(request, user, date_str, nonce, alg, auth, content)
-
-        # Perform verification
-        _perform_signature_verification(public_key, sig_data)
-
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(401, "Signature verification failed")
+    # Verify using the extracted public key
+    _verify_with_public_key(pubkey_text, request, user, date_str, nonce, alg, auth, content)
 
 # -----------------------
 # Existing helper functions (unchanged)
