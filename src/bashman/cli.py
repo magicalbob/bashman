@@ -540,6 +540,68 @@ def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
     _ensure_dest_dir(dest_path)
     return dest_path
 
+# -------- extra helpers to flatten `install` --------
+def _meta_url(server: str, name: str, version: str | None) -> str:
+    return f"{server}/api/packages/{name}" + (f"?version={version}" if version else "")
+
+def _download_url(server: str, name: str, version: str | None) -> str:
+    return f"{server}/api/packages/{name}/download" + (f"?version={version}" if version else "")
+
+def _fetch_json_safe(ctx: typer.Context, url: str) -> Dict[str, Any]:
+    headers = build_signed_headers(ctx, "GET", url, b"") or None
+    try:
+        return _fetch_json(url, headers)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
+        raise typer.Exit(1)
+
+def _fetch_bytes_safe(ctx: typer.Context, url: str) -> bytes:
+    headers = build_signed_headers(ctx, "GET", url, b"") or None
+    try:
+        data = _fetch_bytes(url, headers)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to download: {e}", err=True)
+        raise typer.Exit(1)
+    if not data:
+        typer.echo("✗ Empty download from server", err=True)
+        raise typer.Exit(1)
+    return data
+
+def _ensure_published(meta: Dict[str, Any]) -> None:
+    status = str(meta.get("status", "")).lower()
+    if status != "published":
+        typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
+        raise typer.Exit(4)
+
+def _determine_target_file(dest_path: Path, target_name: str, force: bool) -> Path:
+    target_file = dest_path / target_name
+    if target_file.exists() and not force:
+        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
+        raise typer.Exit(3)
+    return target_file
+
+def _verify_hash(meta: Dict[str, Any], data: bytes, skip: bool) -> None:
+    if skip:
+        return
+    want = (meta.get("file_hash") or "").lower()
+    got = hashlib.sha256(data).hexdigest().lower()
+    if want and got != want:
+        typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
+        raise typer.Exit(5)
+
+def _install_write(target_file: Path, data: bytes, file_mode: int) -> None:
+    try:
+        _atomic_write(target_file, data, file_mode)
+    except Exception as e:
+        typer.echo(f"✗ Failed to write {target_file}: {e}", err=True)
+        raise typer.Exit(1)
+
 @app.command(name="list")
 def _list(
     ctx: typer.Context,
@@ -598,75 +660,21 @@ def install(
     cfg = ctx.obj or {}
     server = cfg.get("server_url", DEFAULT_SERVER_URL)
 
-    # Resolve destination directory (usage error → Exit 2; env/perm issues → Exit 1)
-    try:
-        dest_path = _resolve_install_dir(cfg, dest)
-    except typer.Exit:
-        raise
-    except Exception as e:
-        typer.echo(f"✗ {e}", err=True)
-        raise typer.Exit(1)
-
-    # Determine filename
-    target_name = as_name or _safe_filename(name)
-    target_file = dest_path / target_name
-    if target_file.exists() and not force:
-        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
-        raise typer.Exit(3)
-
-    # Fetch package metadata (to check status and get hash)
-    meta_url = f"{server}/api/packages/{name}"
-    if version:
-        meta_url += f"?version={version}"
-    headers = build_signed_headers(ctx, "GET", meta_url, b"") or None
-    try:
-        meta = _fetch_json(meta_url, headers)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
-        raise typer.Exit(1)
-
-    status = str(meta.get("status", "")).lower()
-    if status != "published":
-        typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
-        raise typer.Exit(4)
-
-    # Download content
-    dl_url = f"{server}/api/packages/{name}/download"
-    if version:
-        dl_url += f"?version={version}"
-    headers = build_signed_headers(ctx, "GET", dl_url, b"") or None
-    try:
-        data = _fetch_bytes(dl_url, headers)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to download: {e}", err=True)
-        raise typer.Exit(1)
-    if not data:
-        typer.echo("✗ Empty download from server", err=True)
-        raise typer.Exit(1)
-
-    # Verify hash unless skipped
-    if not no_verify:
-        want = (meta.get("file_hash") or "").lower()
-        got = hashlib.sha256(data).hexdigest().lower()
-        if want and got != want:
-            typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
-            raise typer.Exit(5)
-
-    # Parse mode (usage error → Exit 2)
+    # 1) resolve destination (usage error → 2; env/perm → 1)
+    dest_path = _resolve_install_dir(cfg, dest)
+    # 2) decide filename and collision handling
+    target_file = _determine_target_file(dest_path, as_name or _safe_filename(name), force)
+    # 3) fetch metadata
+    meta = _fetch_json_safe(ctx, _meta_url(server, name, version))
+    # 4) ensure published
+    _ensure_published(meta)
+    # 5) download bytes
+    data = _fetch_bytes_safe(ctx, _download_url(server, name, version))
+    # 6) verify (unless skipped)
+    _verify_hash(meta, data, skip=no_verify)
+    # 7) parse mode & write
     file_mode = _parse_mode_opt(mode)
-
-    # Write atomically and chmod
-    try:
-        _atomic_write(target_file, data, file_mode)
-    except Exception as e:
-        typer.echo(f"✗ Failed to write {target_file}: {e}", err=True)
-        raise typer.Exit(1)
+    _install_write(target_file, data, file_mode)
 
     typer.echo(f"✓ Installed {name}{(':'+version) if version else ''} → {target_file}")
 
