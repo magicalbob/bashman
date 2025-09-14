@@ -508,6 +508,38 @@ def _atomic_write(path: Path, data: bytes, mode: int) -> None:
     os.chmod(tmp, mode)
     os.replace(tmp, path)
 
+def _parse_mode_opt(mode: str | None) -> int:
+    """Parse an octal mode string (e.g. '755'); on bad input, print usage error and Exit 2."""
+    if not mode:
+        return 0o755
+    try:
+        return int(mode, 8)
+    except Exception:
+        typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
+        raise typer.Exit(2)
+
+def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
+    """
+    Resolve the destination directory:
+      - If --dest provided, use it.
+      - Else require cfg['install_dir']; if missing → usage error Exit 2.
+      - Ensure directory exists and is writable/enterable (via _ensure_dest_dir).
+    """
+    if dest_opt:
+        dest_dir = os.path.abspath(os.path.expanduser(dest_opt))
+    else:
+        configured = cfg.get("install_dir")
+        if not configured:
+            typer.echo(
+                "✗ No install directory configured. Re-run `bashman init --install-dir PATH` or pass --dest.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        dest_dir = os.path.abspath(os.path.expanduser(configured))
+    dest_path = Path(dest_dir)
+    _ensure_dest_dir(dest_path)
+    return dest_path
+
 @app.command(name="list")
 def _list(
     ctx: typer.Context,
@@ -566,14 +598,11 @@ def install(
     cfg = ctx.obj or {}
     server = cfg.get("server_url", DEFAULT_SERVER_URL)
 
-    # Resolve destination directory
-    dest_dir = os.path.abspath(os.path.expanduser(dest or cfg.get("install_dir", "")))
-    if not dest_dir:
-        typer.echo("✗ No install directory configured. Re-run `bashman init --install-dir PATH` or pass --dest.", err=True)
-        raise typer.Exit(2)
+    # Resolve destination directory (usage error → Exit 2; env/perm issues → Exit 1)
     try:
-        dest_path = Path(dest_dir)
-        _ensure_dest_dir(dest_path)
+        dest_path = _resolve_install_dir(cfg, dest)
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
@@ -629,14 +658,8 @@ def install(
             typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
             raise typer.Exit(5)
 
-    # Parse mode
-    file_mode = 0o755
-    if mode:
-        try:
-            file_mode = int(mode, 8)
-        except Exception:
-            typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
-            raise typer.Exit(2)
+    # Parse mode (usage error → Exit 2)
+    file_mode = _parse_mode_opt(mode)
 
     # Write atomically and chmod
     try:
