@@ -374,6 +374,18 @@ def validate_shell_script(content: bytes) -> None:
             ),
         )
 
+def _parse_form_json_fields(keywords: str, dependencies: str, platforms: str) -> tuple[list, dict, list]:
+    """Parse JSON-encoded form fields or raise 400."""
+    try:
+        return json.loads(keywords), json.loads(dependencies), json.loads(platforms)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON in keywords/dependencies/platforms")
+
+async def _ensure_package_absent(database: DatabaseInterface, name: str, version: str) -> None:
+    """Raise 409 if package@version already exists."""
+    if await database.get_package(name, version):
+        raise HTTPException(409, f"Package {name} version {version} already exists")
+
 async def require_auth(request: Request):
     if not REQUIRE_AUTH:
         return
@@ -507,17 +519,8 @@ async def create_package(
     content = await file.read()
     validate_shell_script(content)
 
-    # Parse JSON-encoded form fields
-    try:
-        kw_list = json.loads(keywords)
-        dep_map = json.loads(dependencies)
-        plat_list = json.loads(platforms)
-    except json.JSONDecodeError:
-        raise HTTPException(400, "Invalid JSON in keywords/dependencies/platforms")
-
-    existing = await database.get_package(name, version)
-    if existing:
-        raise HTTPException(409, f"Package {name} version {version} already exists")
+    kw_list, dep_map, plat_list = _parse_form_json_fields(keywords, dependencies, platforms)
+    await _ensure_package_absent(database, name, version)
 
     pkg = PackageMetadata(
         name=name,
