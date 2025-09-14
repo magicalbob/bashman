@@ -150,10 +150,7 @@ def _perform_signature_verification(public_key: object, sig_data: SignatureData)
 
 def _verify_with_public_key(pubkey_text: str, request: Request, user: str, date_str: str,
                             nonce: str, alg: str, auth: str, content: bytes | None) -> None:
-    """
-    Load the SSH public key, construct SignatureData and verify.
-    Isolated to shave branches from _verify_signature_or_401.
-    """
+    """Load the SSH public key, construct SignatureData and verify."""
     try:
         public_key = load_ssh_public_key(pubkey_text.encode("utf-8"))  # type: ignore
         sig_data = _prepare_signature_data(request, user, date_str, nonce, alg, auth, content)
@@ -166,9 +163,7 @@ def _verify_with_public_key(pubkey_text: str, request: Request, user: str, date_
 async def _verify_signature_or_401(request: Request, database: DatabaseInterface, content: bytes | None) -> None:
     """
     Verify Bashman signature if present; if REQUIRE_AUTH is on, enforce presence and validity.
-    Refactored to reduce cognitive complexity.
     """
-    # Extract headers
     header_data = _extract_signature_headers(request)
     if not header_data:
         if REQUIRE_AUTH:
@@ -176,22 +171,17 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
         return
 
     user, date_str, nonce, alg, auth = header_data
-
-    # Validate timing and prevent replays
     _validate_signature_timing(date_str, user, nonce)
 
-    # Check crypto support
     if load_ssh_public_key is None and REQUIRE_AUTH:
         raise HTTPException(500, "Server missing crypto support")
 
-    # Get user's public key
     pubkey_text = await _fetch_user_public_key(database, user)
     if pubkey_text is None:
         if REQUIRE_AUTH:
             raise HTTPException(401, "Unknown user")
         return
 
-    # Verify using the extracted public key
     _verify_with_public_key(pubkey_text, request, user, date_str, nonce, alg, auth, content)
 
 # -----------------------
@@ -199,10 +189,7 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
 # -----------------------
 
 async def _fetch_user_public_key(database: DatabaseInterface, nickname: str) -> Optional[str]:
-    """
-    Get the user's public key by nickname.
-    This reaches into the SQLite implementation to avoid changing the interface.
-    """
+    """Get the user's public key by nickname (SQLite shortcut)."""
     try:
         from .database.sqlite import SQLiteDatabase  # type: ignore
         if isinstance(database, SQLiteDatabase) and getattr(database, "_db", None):
@@ -223,8 +210,7 @@ async def _enqueue_publish_job(database: DatabaseInterface, pkg_id: int, name: s
         if isinstance(database, SQLiteDatabase):
             await database.enqueue_publish(int(pkg_id), name, version)  # type: ignore[attr-defined]
     except Exception:
-        # non-fatal
-        pass
+        pass  # non-fatal
 
 def _supports_publish_jobs(db: Any) -> bool:
     """Duck-typed capability check; avoids import/instance checks."""
@@ -241,50 +227,44 @@ async def _safe_fail_job(database: Any, job_id: Any, msg: str) -> None:
     with suppress(Exception):
         await database.fail_publish_job(job_id, msg)  # type: ignore[attr-defined]
 
+# ---- NEW: move the loop's helpers out-of-line (reduces cognitive complexity) ----
+async def _interruptible_wait(stop_event: asyncio.Event, timeout: float = 1.0) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+
+async def _claim_next_job(database: Any) -> Optional[Tuple[Any, ...]]:
+    try:
+        return await database.claim_next_publish_job()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+async def _process_publish_job(database: Any, job: Tuple[Any, ...]) -> None:
+    job_id, _pkg_id, name, version, _attempts = job
+    try:
+        ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
+    except Exception as e:
+        await _safe_fail_job(database, job_id, str(e))
+        return
+
+    if ok:
+        with suppress(Exception):
+            await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
+    else:
+        await _safe_fail_job(database, job_id, "Package/version not found")
+
 async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event):
     """Background loop: claim pending jobs and publish them automatically."""
-    # Guard quickly by capability rather than importing SQLiteDatabase
     if not _supports_publish_jobs(database):
         return
 
-    async def _wait_for_stop(timeout: float = 1.0) -> None:
-        """Sleep a bit, but wake promptly on shutdown."""
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            pass
-
-    async def _claim_job() -> Optional[Tuple[Any, ...]]:
-        """Try to claim the next job; return None on any error or no job."""
-        try:
-            return await database.claim_next_publish_job()  # type: ignore[attr-defined]
-        except Exception:
-            return None
-
-    async def _process_job(job: Tuple[Any, ...]) -> None:
-        """Publish the package for a claimed job, handling all failure paths."""
-        job_id, _pkg_id, name, version, _attempts = job
-        try:
-            ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
-            if ok:
-                await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
-            else:
-                # Package/version not found; record as failed
-                await database.fail_publish_job(job_id, "Package/version not found")  # type: ignore[attr-defined]
-        except Exception as e:
-            # Best-effort failure record; swallow secondary errors
-            try:
-                await database.fail_publish_job(job_id, str(e))  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-    # Main loop: poll, process, or briefly wait
     while not stop_event.is_set():
-        job = await _claim_job()
-        if not job:
-            await _wait_for_stop(1.0)
-            continue
-        await _process_job(job)
+        job = await _claim_next_job(database)
+        if job:
+            await _process_publish_job(database, job)
+        else:
+            await _interruptible_wait(stop_event, 1.0)
 
 def _parse_alg(alg: str) -> Optional[str]:
     if alg == "ed25519":
