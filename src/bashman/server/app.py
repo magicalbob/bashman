@@ -242,36 +242,6 @@ async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event
     if not _supports_publish_jobs(database):
         return
 
-    while not stop_event.is_set():
-        # Try to claim the next job; ignore any errors and treat as 'no job'
-        try:
-            job: Optional[Tuple[Any, ...]] = await database.claim_next_publish_job()  # type: ignore[attr-defined]
-        except Exception:
-            job = None
-
-        if not job:
-            # Brief sleep that's interruptible by stop_event
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
-            continue
-
-        job_id, _pkg_id, name, version, _attempts = job
-
-        try:
-            ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
-        except Exception as e:
-            await _safe_fail_job(database, job_id, str(e))
-            continue
-
-        if ok:
-            # Completing a job shouldn't bring down the loop if it fails
-            with suppress(Exception):
-                await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
-        else:
-            await _safe_fail_job(database, job_id, "Package/version not found")
-
     async def _wait_for_stop(timeout: float = 1.0) -> None:
         """Sleep a bit, but wake promptly on shutdown."""
         try:
