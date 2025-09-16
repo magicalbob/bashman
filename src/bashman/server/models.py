@@ -5,6 +5,7 @@ from enum import Enum
 
 class PackageStatus(str, Enum):
     QUARANTINED = "quarantined"
+    REJECTED = "rejected"
     PUBLISHED = "published"
     DEPRECATED = "deprecated"
     DELETED = "deleted"

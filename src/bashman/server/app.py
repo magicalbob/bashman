@@ -1,9 +1,13 @@
+# src/bashman/server/app.py
 import re
 import os
 import time
 import json
 import hashlib
 import asyncio
+import subprocess
+import tempfile
+from pathlib import Path
 from base64 import b64decode
 from email.utils import parsedate_to_datetime
 from datetime import timezone
@@ -50,6 +54,11 @@ REQUIRE_AUTH = os.environ.get("BASHMAN_REQUIRE_AUTH", "0") == "1"
 MAX_SKEW_SECONDS = 300  # 5 minutes for clock skew & nonce window
 ALGORITHM_MISMATCH = "Algorithm mismatch"
 AUTO_PUBLISH = os.environ.get("BASHMAN_AUTO_PUBLISH", "0") == "1"
+
+# ShellCheck gate (Stage 3)
+BASHMAN_SHELLCHECK_MODE = os.environ.get("BASHMAN_SHELLCHECK_MODE", "best-effort").lower()
+# default aligns with homebin/stage3
+BASHMAN_SHELLCHECK_ARGS = os.environ.get("BASHMAN_SHELLCHECK_ARGS", "-x -S style")
 
 # -----------------------
 # Data structures for auth
@@ -185,6 +194,60 @@ async def _verify_signature_or_401(request: Request, database: DatabaseInterface
     _verify_with_public_key(pubkey_text, request, user, date_str, nonce, alg, auth, content)
 
 # -----------------------
+# ShellCheck helpers (Stage 3)
+# -----------------------
+
+def _tool_exists(cmd: list[str]) -> bool:
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        return True
+    except Exception:
+        return False
+
+def _shellcheck_available() -> bool:
+    return _tool_exists(["shellcheck", "--version"])
+
+def _should_run_shellcheck() -> bool:
+    """
+    Decide whether to run ShellCheck based on mode and availability.
+    Modes:
+      - "off"         : never run
+      - "best-effort" : run if available, else skip (treat as OK)
+      - "enforce"     : require shellcheck; if missing or fails -> reject
+    """
+    if BASHMAN_SHELLCHECK_MODE == "off":
+        return False
+    if _shellcheck_available():
+        return True
+    return BASHMAN_SHELLCHECK_MODE == "enforce"
+
+def _run_shellcheck_bytes(content: bytes, name_hint: str = "script.sh") -> tuple[bool, str]:
+    """
+    Run shellcheck against script bytes. Returns (ok, message).
+    In best-effort mode and tool-missing, returns (True, ...).
+    """
+    if not _shellcheck_available():
+        if BASHMAN_SHELLCHECK_MODE == "best-effort":
+            return True, "shellcheck not available; skipping (best-effort)"
+        return False, "shellcheck not available; mode=enforce"
+
+    args = ["shellcheck"] + BASHMAN_SHELLCHECK_ARGS.split()
+    suffix = Path(name_hint).suffix or ".sh"
+    with tempfile.NamedTemporaryFile(prefix="bashman_", suffix=suffix, delete=True) as tf:
+        tf.write(content)
+        tf.flush()
+        try:
+            out = subprocess.run(args + [tf.name], capture_output=True, text=True, check=False)
+        except Exception as e:
+            if BASHMAN_SHELLCHECK_MODE == "best-effort":
+                return True, f"shellcheck invocation error skipped (best-effort): {e}"
+            return False, f"shellcheck invocation error (enforce): {e}"
+
+    ok = (out.returncode == 0)
+    msg = ((out.stdout or "") + ("\n" + out.stderr if out.stderr else "")).strip()
+    return ok, msg or ("OK" if ok else "FAILED")
+
+# -----------------------
 # Existing helper functions (unchanged)
 # -----------------------
 
@@ -241,18 +304,36 @@ async def _claim_next_job(database: Any) -> Optional[Tuple[Any, ...]]:
         return None
 
 async def _process_publish_job(database: Any, job: Tuple[Any, ...]) -> None:
+    """
+    Process a queued publish job:
+      1) fetch content
+      2) run ShellCheck (per mode)
+      3) update status to PUBLISHED or REJECTED
+      4) complete job (terminal either way)
+    """
     job_id, _pkg_id, name, version, _attempts = job
     try:
-        ok = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
+        got = await database.get_package_with_content(name, version)
+        if not got:
+            await _safe_fail_job(database, job_id, "Package/version not found")
+            return
+        meta, content = got
+
+        final_status = PackageStatus.PUBLISHED
+        if _should_run_shellcheck():
+            ok, _msg = _run_shellcheck_bytes(content, name_hint=meta.name or "script.sh")
+            final_status = PackageStatus.PUBLISHED if ok else PackageStatus.REJECTED
+
+        ok = await database.update_package(name, version, {"status": final_status})
+        if not ok:
+            await _safe_fail_job(database, job_id, "Package/version not found on status update")
+            return
+
+        with suppress(Exception):
+            await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
     except Exception as e:
         await _safe_fail_job(database, job_id, str(e))
         return
-
-    if ok:
-        with suppress(Exception):
-            await database.complete_publish_job(job_id)  # type: ignore[attr-defined]
-    else:
-        await _safe_fail_job(database, job_id, "Package/version not found")
 
 async def _publisher_loop(database: DatabaseInterface, stop_event: asyncio.Event):
     """Background loop: claim pending jobs and publish them automatically."""
@@ -570,10 +651,22 @@ async def publish_package(
     version: str,
     database: DatabaseInterface = Depends(get_database),
 ):
-    success = await database.update_package(name, version, {"status": PackageStatus.PUBLISHED})
+    got = await database.get_package_with_content(name, version)
+    if not got:
+        raise HTTPException(404, f"Package {name} version {version} not found")
+    meta, content = got
+
+    final_status = PackageStatus.PUBLISHED
+    details: dict[str, str] = {}
+    if _should_run_shellcheck():
+        ok, msg = _run_shellcheck_bytes(content, name_hint=meta.name or "script.sh")
+        details["shellcheck"] = msg
+        final_status = PackageStatus.PUBLISHED if ok else PackageStatus.REJECTED
+
+    success = await database.update_package(name, version, {"status": final_status})
     if not success:
         raise HTTPException(404, f"Package {name} version {version} not found")
-    return {"status": "published", "message": f"Package {name} version {version} is now published"}
+    return {"status": final_status, **details}
 
 @app.delete("/api/packages/{name}/{version}")
 async def delete_package(
