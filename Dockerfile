@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install system build deps
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential curl && \
+    apt-get install -y --no-install-recommends build-essential curl shellcheck && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
