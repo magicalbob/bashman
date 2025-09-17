@@ -485,9 +485,25 @@ async def upload_script_legacy(
     content = await file.read()
     validate_shell_script(content)
 
-    existing = await database.get_package(file.filename)
+    # Legacy path always uses 0.1.0; check that *specific* version and
+    # allow overwrite if it isn't published.
+    existing = await database.get_package(file.filename, "0.1.0")
     if existing:
-        raise HTTPException(409, f"{file.filename} already exists")
+        if existing.status == PackageStatus.PUBLISHED:
+            raise HTTPException(409, f"{file.filename}@0.1.0 is already published; bump version.")
+        # In-place overwrite of draft/rejected content
+        updates = {
+            "description": f"Uploaded script: {file.filename}",
+            "content": content,
+            "file_size": len(content),
+            "file_hash": hashlib.sha256(content).hexdigest(),
+            "status": PackageStatus.QUARANTINED,
+        }
+        await database.update_package(file.filename, "0.1.0", updates)
+        updated = await database.get_package(file.filename, "0.1.0")
+        if updated and updated.id is not None:
+            await _enqueue_publish_job(database, updated.id, updated.name, updated.version)
+        return {"status": "quarantined", "filename": file.filename, "message": "updated draft"}
 
     package_metadata = PackageMetadata(
         name=file.filename,
@@ -586,36 +602,62 @@ async def create_package(
     validate_shell_script(content)
 
     kw_list, dep_map, plat_list = _parse_form_json_fields(keywords, dependencies, platforms)
-    await _ensure_package_absent(database, name, version)
+    existing = await database.get_package(name, version)
 
-    pkg = PackageMetadata(
-        name=name,
-        version=version,
-        description=description,
-        author=author,
-        homepage=homepage,
-        repository=repository,
-        license=license,
-        keywords=kw_list,
-        dependencies=dep_map,
-        platforms=plat_list,
-        shell_version=shell_version,
-        file_size=len(content),
-        file_hash=hashlib.sha256(content).hexdigest(),
-        status=PackageStatus.QUARANTINED,
-    )
-    pkg_id = await database.create_package(pkg, content)
-    # Enqueue for auto-publish (best-effort) — processed only if BASHMAN_AUTO_PUBLISH=1
-    try:
-        await _enqueue_publish_job(database, int(pkg_id), name, version)
-    except Exception:
-        pass
-
-    return {
-        "id": pkg_id,
-        "status": "created",
-        "message": f"Package {name} version {version} created successfully",
-    }
+    if existing:
+        if existing.status == PackageStatus.PUBLISHED:
+            raise HTTPException(409, f"Package {name} version {version} already exists and is published; bump version.")
+        # Overwrite draft/rejected in place
+        updates = {
+            "description": description,
+            "author": author,
+            "homepage": homepage,
+            "repository": repository,
+            "license": license,
+            "keywords": kw_list,
+            "dependencies": dep_map,
+            "platforms": plat_list,
+            "shell_version": shell_version,
+            "content": content,
+            "file_size": len(content),
+            "file_hash": hashlib.sha256(content).hexdigest(),
+            "status": PackageStatus.QUARANTINED,
+        }
+        await database.update_package(name, version, updates)
+        pkg_id = existing.id or "unknown"
+        # re-enqueue for auto-publish
+        with suppress(Exception):
+            await _enqueue_publish_job(database, int(pkg_id), name, version)
+        return {
+            "id": pkg_id,
+            "status": "updated",
+            "message": f"Package {name} version {version} updated successfully",
+        }
+    else:
+        pkg = PackageMetadata(
+            name=name,
+            version=version,
+            description=description,
+            author=author,
+            homepage=homepage,
+            repository=repository,
+            license=license,
+            keywords=kw_list,
+            dependencies=dep_map,
+            platforms=plat_list,
+            shell_version=shell_version,
+            file_size=len(content),
+            file_hash=hashlib.sha256(content).hexdigest(),
+            status=PackageStatus.QUARANTINED,
+        )
+        pkg_id = await database.create_package(pkg, content)
+        with suppress(Exception):
+            await _enqueue_publish_job(database, int(pkg_id), name, version)
+        return {
+            "id": pkg_id,
+            "status": "created",
+            "message": f"Package {name} version {version} created successfully",
+        }
 
 @app.get("/api/search", response_model=List[PackageMetadata])
 async def search_packages(

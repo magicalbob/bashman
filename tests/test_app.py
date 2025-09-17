@@ -107,11 +107,26 @@ def test_upload_invalid_shebangs(client):
 
 
 def test_upload_duplicate_file(client):
+    # First upload (draft/quarantined)
+    script1 = "#!/bin/bash\necho 1"
+    r1 = client.post("/scripts", files={"file": ("dup.sh", script1.encode(), "text/plain")})
+    assert r1.status_code == 200
+    # Second upload while still unpublished should overwrite and succeed
+    script2 = "#!/bin/bash\necho 2"
+    r2 = client.post("/scripts", files={"file": ("dup.sh", script2.encode(), "text/plain")})
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "quarantined"
+
+def test_upload_duplicate_after_publish_is_409(client):
     script = "#!/bin/bash\necho first"
-    assert client.post("/scripts", files={"file": ("dup.sh", script.encode(), "text/plain")}).status_code == 200
-    r2 = client.post("/scripts", files={"file": ("dup.sh", script.encode(), "text/plain")})
+    assert client.post("/scripts", files={"file": ("dup2.sh", script.encode(), "text/plain")}).status_code == 200
+    # publish it
+    rp = client.post("/api/packages/dup2.sh/0.1.0/publish")
+    assert rp.status_code == 200 and rp.json()["status"] == "published"
+    # re-upload same filename/version → 409
+    r2 = client.post("/scripts", files={"file": ("dup2.sh", script.encode(), "text/plain")})
     assert r2.status_code == 409
-    assert "dup.sh already exists" in r2.json()["detail"]
+    assert "already published" in r2.json()["detail"].lower()
 
 
 def test_upload_empty_file(client):
