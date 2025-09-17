@@ -27,12 +27,20 @@ run_tests:
   variables:
     BASHMAN_REQUIRE_AUTH: 0
     BASHMAN_AUTO_PUBLISH: 0
+    # keep coverage DB somewhere always-writable
+    COVERAGE_FILE: "/tmp/.coverage"
+    # install into the one venv we create
+    POETRY_VIRTUALENVS_CREATE: "false"
+    # don’t cache megabytes of wheels
+    PIP_NO_CACHE_DIR: "1"
+    # move Poetry’s cache to a short-lived path (or disable; see step 2)
+    POETRY_CACHE_DIR: "/tmp/poetry-cache"
   before_script:
     - python3.12 -m venv venv
     - source venv/bin/activate
     - python -m pip install --upgrade pip
-    - pip install poetry
-    - poetry env use python3.12
+    - pip install --no-cache-dir poetry
+    - poetry config virtualenvs.create false --local
   script:
     - echo "Installing package with dev dependencies..."
     - poetry install --with dev

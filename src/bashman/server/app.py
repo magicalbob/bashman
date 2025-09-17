@@ -54,6 +54,7 @@ REQUIRE_AUTH = os.environ.get("BASHMAN_REQUIRE_AUTH", "0") == "1"
 MAX_SKEW_SECONDS = 300  # 5 minutes for clock skew & nonce window
 ALGORITHM_MISMATCH = "Algorithm mismatch"
 AUTO_PUBLISH = os.environ.get("BASHMAN_AUTO_PUBLISH", "0") == "1"
+NAME_HINT = "script.sh"
 
 # ShellCheck gate (Stage 3)
 BASHMAN_SHELLCHECK_MODE = os.environ.get("BASHMAN_SHELLCHECK_MODE", "best-effort").lower()
@@ -221,7 +222,7 @@ def _should_run_shellcheck() -> bool:
         return True
     return BASHMAN_SHELLCHECK_MODE == "enforce"
 
-def _run_shellcheck_bytes(content: bytes, name_hint: str = "script.sh") -> tuple[bool, str]:
+def _run_shellcheck_bytes(content: bytes, name_hint: str = NAME_HINT) -> tuple[bool, str]:
     """
     Run shellcheck against script bytes. Returns (ok, message).
     In best-effort mode and tool-missing, returns (True, ...).
@@ -321,7 +322,7 @@ async def _process_publish_job(database: Any, job: Tuple[Any, ...]) -> None:
 
         final_status = PackageStatus.PUBLISHED
         if _should_run_shellcheck():
-            ok, _msg = _run_shellcheck_bytes(content, name_hint=meta.name or "script.sh")
+            ok, _msg = _run_shellcheck_bytes(content, name_hint=meta.name or NAME_HINT)
             final_status = PackageStatus.PUBLISHED if ok else PackageStatus.REJECTED
 
         ok = await database.update_package(name, version, {"status": final_status})
@@ -701,7 +702,7 @@ async def publish_package(
     final_status = PackageStatus.PUBLISHED
     details: dict[str, str] = {}
     if _should_run_shellcheck():
-        ok, msg = _run_shellcheck_bytes(content, name_hint=meta.name or "script.sh")
+        ok, msg = _run_shellcheck_bytes(content, name_hint=meta.name or NAME_HINT)
         details["shellcheck"] = msg
         final_status = PackageStatus.PUBLISHED if ok else PackageStatus.REJECTED
 
