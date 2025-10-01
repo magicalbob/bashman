@@ -136,13 +136,7 @@ deploy_bashman:
     - docker stop bashman-app || true
     - docker rm bashman-app || true
     - docker volume create bashman-data || true
-    - docker run -d \
-        --name bashman-app \
-        -p 8000:8000 \
-        --restart unless-stopped \
-        -e BASHMAN_DB_PATH=/data/bashman.db \
-        -v /opt/bashman/:/data \
-        $IMAGE_NAME
+    - docker run -d --name bashman-app -p 8000:8000 --restart unless-stopped -e BASHMAN_DB_PATH=/data/bashman.db -v /opt/bashman/:/data $IMAGE_NAME
     - echo "Waiting for app to become available..."
     - sleep 5
     - wget -q http://192.168.0.2:8000/health || (echo "Deployment failed"; exit 1)
