@@ -148,10 +148,8 @@ deploy_bashman:
     - mkdir install-dir
     - python src/bashman/cli.py init --nickname developer --key-file  /root/.ssh/id_ed25519 --install-dir ./install-dir
     - python src/bashman/cli.py list
-    - python src/bashman/cli.py publish ./bin/rand_pass_key
+    - python src/bashman/cli.py publish ./bin/rand_pass_key || echo "Already published, continuing"
     - python src/bashman/cli.py list
     - find ./install-dir
     - python src/bashman/cli.py install rand_pass_key
     - find ./install-dir
-
-    
