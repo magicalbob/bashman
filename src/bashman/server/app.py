@@ -25,6 +25,9 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
+from fastapi.exception_handlers import http_exception_handler as _default_http_exception_handler
 from pydantic import BaseModel
 
 from sqlite3 import IntegrityError as SQLiteIntegrityError
@@ -752,3 +755,93 @@ async def create_user(user: UserCreate, database: DatabaseInterface = Depends(ge
         return {"status": "success", "message": "User registered successfully."}
     except (SQLiteIntegrityError, AIOSQLiteIntegrityError):
         raise HTTPException(status_code=409, detail="User with this nickname or key already exists.")
+
+def wants_html(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/html" in accept and "application/json" not in accept
+
+@app.get("/", include_in_schema=False)
+async def home(request: Request, database: DatabaseInterface = Depends(get_database)):
+    # Only published packages should be visible publicly
+    pkgs = await database.list_packages(limit=50, offset=0, status="published")
+    # very small inline template; you can swap to Jinja2 later
+    items = "".join(
+        f'<li><a href="/packages/{p.name}">{p.name}</a> <small>{p.version}</small>'
+        f'<br><span>{(p.description or "").strip()}</span></li>'
+        for p in pkgs
+    ) or "<li><em>No published packages yet.</em></li>"
+    html = f"""
+    <!doctype html><meta charset="utf-8">
+    <title>Bashman Registry</title>
+    <style>
+      body{{font:14px/1.4 system-ui, sans-serif; max-width:900px; margin:2rem auto; padding:0 1rem}}
+      header{{display:flex; justify-content:space-between; align-items:center}}
+      input[type=search]{{padding:.5rem; width:18rem}}
+      li{{margin:.75rem 0}}
+      small{{opacity:.6}}
+      code{{background:#f6f8fa; padding:0 .25rem; border-radius:4px}}
+    </style>
+    <header>
+      <h1>Bashman Registry</h1>
+      <form action="/packages" method="get">
+        <input name="q" type="search" placeholder="Search published…" />
+      </form>
+    </header>
+    <p>Install via CLI: <code>bashman install &lt;name&gt;</code></p>
+    <ul>{items}</ul>
+    <p><a href="/docs">OpenAPI docs</a> • <a href="/redoc">ReDoc</a></p>
+    """
+    return HTMLResponse(html)
+
+@app.get("/packages/{name}", include_in_schema=False)
+async def package_page(name: str, request: Request, database: DatabaseInterface = Depends(get_database)):
+    from .models import PackageStatus
+    pkg = await database.get_package(name, None)
+    if not pkg or pkg.status != PackageStatus.PUBLISHED:
+        raise HTTPException(404, "Package not found")
+    dl = f"/api/packages/{pkg.name}/download"
+    html = f"""
+    <!doctype html><meta charset="utf-8">
+    <title>{pkg.name} · Bashman</title>
+    <h1>{pkg.name} <small>{pkg.version}</small></h1>
+    <p>{(pkg.description or 'No description').strip()}</p>
+    <p><strong>Install:</strong> <code>bashman install {pkg.name}</code></p>
+    <p><a href="{dl}">Download script</a></p>
+    """
+    return HTMLResponse(html)
+
+@app.get("/packages", include_in_schema=False)
+async def search_packages_html(q: str = "", database: DatabaseInterface = Depends(get_database)):
+    results = await database.search_packages(q, limit=50) if q.strip() else []
+    items = "".join(f'<li><a href="/packages/{p.name}">{p.name}</a> <small>{p.version}</small></li>' for p in results) or "<li><em>No matches.</em></li>"
+    return HTMLResponse(f"<!doctype html><h1>Search: {q}</h1><ul>{items}</ul><p><a href='/'>Back</a></p>")
+
+@app.exception_handler(HTTPException)
+async def html_aware_http_exception_handler(request: Request, exc: HTTPException):
+    # Keep JSON for API/CLI and for non-HTML Accept headers
+    if not wants_html(request):
+        return await _default_http_exception_handler(request, exc)
+
+    # Special-case legacy browser hits: send people to the landing page
+    if request.url.path == "/scripts" and exc.status_code in (401, 403):
+        return RedirectResponse(url="/", status_code=307)
+
+    # Friendly minimal HTML error page
+    titles = {
+        401: "Sign-in required",
+        403: "Access denied",
+        404: "Not found",
+        500: "Server error",
+    }
+    title = titles.get(exc.status_code, "Error")
+    detail = str(exc.detail or "")
+    html = f"""<!doctype html><meta charset="utf-8">
+    <title>{title} · Bashman</title>
+    <style>body{{font:14px/1.5 system-ui,sans-serif;max-width:720px;margin:3rem auto;padding:0 1rem}}
+    a.button{{display:inline-block;margin-top:1rem;padding:.5rem .75rem;border:1px solid #ddd;border-radius:6px;text-decoration:none}}
+    small{{opacity:.65}}</style>
+    <h1>{title}</h1>
+    <p>{detail}</p>
+    <p><a class="button" href="/">Back to registry</a> <small>or open <a href="/docs">API docs</a></small></p>
+    """
+    return HTMLResponse(html, status_code=exc.status_code)
