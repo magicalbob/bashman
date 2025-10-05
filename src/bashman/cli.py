@@ -24,7 +24,7 @@ VALID_STATUSES = ("published", "quarantined")
 
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
-HTTP_ERROR_MSG ="An HTTP error occurred"
+HTTP_ERROR_MSG = "An HTTP error occurred"
 FAILED_TO_FETCH_JSON = "Failed to fetch JSON"
 
 # ---- Config paths ----
@@ -181,6 +181,21 @@ def _load_private_key_for_signing(key_path: str):
         pass
 
     return None, None
+
+
+def _supports_headers_param(func) -> bool:
+    """
+    Back-compat helper expected by tests:
+    True if a function accepts **kwargs or a 'headers' kwarg.
+    """
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    for p in sig.parameters.values():
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return "headers" in sig.parameters
 
 
 def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: bytes | None) -> dict:
@@ -654,7 +669,7 @@ def _modern_publish(
         msg = resp.json().get("message", "created/updated")
         typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error(TTP_ERROR_MSG, e)
+        _echo_http_error(HTTP_ERROR_MSG, e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
