@@ -1,228 +1,218 @@
-Bashman: The Package Manager for Bash Scripts
-=============================================
+# Bashman: The Package Manager for Bash Scripts
 
-![Bashman Diagram](https://dev.ellisbs.co.uk/files/Bashman.png)
+**Bashman** is a tiny registry + CLI for shipping single-file shell scripts with versioning and metadata.
 
-**Bashman** brings a PyPI-like experience to shell scripting: discover, publish, and (eventually) install Bash packages with versioning and metadata. The current MVP ships a **FastAPI** backend with **SQLite** storage (content as BLOBs), **FTS5** search, basic **download stats**, and a slim **Typer** CLI for bootstrap and legacy upload/list flows.
+- Backend: FastAPI + SQLite (content stored as BLOBs, FTS5 search, basic download stats)
+- CLI: Typer (`init`, `start`, `publish`, `list`, `install`)
+- Optional request-signing (Ed25519 / RSA-PSS-SHA256 / ECDSA-SHA256)
 
-> **Status:** Server/API is usable; CLI covers `init`, `start`, and **legacy** `publish`/`list`. New `/api/*` endpoints are preferred for programmatic use. Request-signing is scaffolded; see **Auth** note under [Server Usage](#server-usage).
+> The server exposes JSON APIs under `/api/*`. Legacy endpoints (`/scripts`) exist for back-compat with older CLI flows.
 
-* * * * *
+---
 
-Table of Contents
------------------
+## Quickstart
 
-1.  [Quickstart](#quickstart)
+```bash
+# 1) install (dev)
+python -m pip install --upgrade pip
+pip install -e .
 
-2.  [CLI Commands](#cli-commands)
+# 2) start server (localhost:8000)
+bashman start
 
-3.  [Server Usage](#server-usage)
+# 3) init client (registers your pubkey on the server)
+bashman init   --nickname you   --key-file ~/.ssh/id_ed25519   --server-url http://127.0.0.1:8000
+```
 
-4.  [Package metadata](#package-metadata)
+---
 
-5.  [Roadmap](#roadmap)
+## Publishing scripts (updated)
 
-6.  [Contributing](#contributing)
+You now have **two ways** to publish from the CLI:
 
-* * * * *
+### A) Legacy upload (minimal; filename + version 0.1.0)
 
-Quickstart
-----------
+```bash
+bashman publish ./myscript.sh
+```
 
-> If a `bashman` executable isn't on your PATH yet, you can run the CLI via:
->
-> `python -m bashman.cli --help`
+- Hits `POST /scripts`
+- Package **name = filename**, **version = `0.1.0`**
+- Enters **`quarantined`** status (see “Publish lifecycle” below)
+- Populates only basic fields (description derives from filename). All “rich” metadata (author, homepage, etc.) stays empty.
 
-1.  **Install Bashman (local dev while private)**
+This is intentionally simple to keep existing automation working.
 
-    `python -m pip install --upgrade pip
-    pip install -e .           # or: poetry install`
+### B) Rich upload (new; full metadata)
 
-2.  **Initialize your workspace**
+If you pass **any** metadata flags (or `--manifest`), the CLI uses the modern API:
 
-    `bashman init\
-      --nickname <you>\
-      --key-file ~/.ssh/id_ed25519\
-      --server-url http://127.0.0.1:8000`
+```bash
+bashman publish ./myscript.sh   --name hello-world   --version 1.2.3   --description "Say hello"   --author "Jane Smith"   --homepage "https://example.org"   --repository "https://git.example/you/hello-world"   --license MIT   --keyword hello --keyword demo   --dep coreutils=">=8.30" --dep curl="^7"   --platform linux --platform darwin   --shell-version "bash 5"
+```
 
-    The CLI default server URL is `https://bashman.ellisbs.co.uk`. For local dev, pass `--server-url` (or set `BASHMAN_SERVER_URL`).
+This hits `POST /api/packages` with a multipart form and **populates all metadata columns** (the fields you saw as `|||||||` in SQLite will be set when you publish this way).
 
-3.  **Start the registry server** (localhost:8000 by default)
+#### Flags (CLI)
 
-    `bashman start`
+- `--name` (default: filename)  
+- `--version` (default: `0.1.0` if you don’t pass metadata)  
+- `--description`, `--author`, `--homepage`, `--repository`, `--license`, `--shell-version`  
+- `--keyword` (repeatable)  
+- `--dep` (repeatable) accepts `name=version`; bare `--dep name` becomes `{"name": "*"}`  
+- `--platform` (repeatable)  
+- `--manifest PATH` (optional JSON file; flags override manifest)
 
-    *(No built-in daemonization/log PID files; use a supervisor if needed.)*
+> The CLI takes care of JSON-encoding `keywords`, `dependencies`, and `platforms` into the exact form the server expects.
 
-4.  **Publish a package (legacy endpoint)**
+#### Manifest example
 
-    `bashman publish ./myscript.sh`
+```json
+{
+  "name": "hello-world",
+  "version": "1.2.3",
+  "description": "Say hello",
+  "author": "Jane Smith",
+  "homepage": "https://example.org",
+  "repository": "https://git.example/you/hello-world",
+  "license": "MIT",
+  "keywords": ["hello", "demo"],
+  "dependencies": { "coreutils": ">=8.30" },
+  "platforms": ["linux", "darwin"],
+  "shell_version": "bash 5"
+}
+```
 
-    This uses the legacy `/scripts` flow and creates a **quarantined** package named after the filename with version `0.1.0`. For richer metadata, prefer the new HTTP form API below.
+Use it with:
 
-5.  **List (legacy, quarantined names)**
+```bash
+bashman publish ./myscript.sh --manifest ./bashman.json
+```
 
-    `bashman list`
+Flags always override manifest fields.
 
-    Programmatic list/search of **published** packages is available via HTTP: `/api/packages`, `/api/search`.
+---
 
-* * * * *
+## Publish lifecycle
 
-CLI Commands
-------------
+- New uploads enter **`quarantined`**.
+- You can move a package to **`published`** in two ways:
 
-### Server
+  1. **Manual publish** (API):  
+     `POST /api/packages/<name>/<version>/publish`
+  2. **Auto-publish queue** (server): set `BASHMAN_AUTO_PUBLISH=1`. The server picks jobs and changes status automatically.
 
-`bashman start [--host HOST] [--port PORT]`
+- **ShellCheck gate** (optional):  
+  The server can lint uploads before publishing. Configure with env vars:
 
-### Discover & Manage
+  - `BASHMAN_SHELLCHECK_MODE`:  
+    - `off` — never run  
+    - `best-effort` *(default)* — run if available; missing tool does **not** block publishing  
+    - `enforce` — require ShellCheck to pass; otherwise package is **rejected**
+  - `BASHMAN_SHELLCHECK_ARGS`: e.g. `-x -S style`
 
-`bashman list                      # legacy: quarantined names from /scripts
+If your package seems “stuck” in `quarantined`, check whether auto-publish is disabled or ShellCheck is in `enforce` mode and failing.
 
-* * * * *
+---
 
-Server Usage
-------------
+## Installing packages
 
-The server exposes a **JSON API** under `/api/*`. Legacy endpoints remain for the current CLI.
+```bash
+# latest
+bashman install hello-world
 
-### Endpoints (current)
+# specific version
+bashman install hello-world -v 1.2.3
 
--   `GET /api/packages` --- list (filter with `status=published|quarantined`, `limit`, `offset`)
+# override install dir / filename
+bashman install hello-world --dest ~/.local/bin --as hello
+```
 
--   `GET /api/packages/{name}` --- latest by `created_at` (or `?version=x.y.z`)
+- The CLI defaults to the install dir you set during `init` (`--install-dir`).
+- SHA256 verification is enabled by default; use `--no-verify` to skip.
 
--   `GET /api/packages/{name}/versions` --- all versions
+---
 
--   `POST /api/packages` --- **multipart form** (create; see example below)
+## Listing & searching
 
--   `POST /api/packages/{name}/{version}/publish` --- set status to `published`
+- CLI (published): `bashman list`  
+- CLI (legacy quarantined): `bashman list --status quarantined`
+- API search: `GET /api/search?q=term&limit=50` (published only)
 
--   `DELETE /api/packages/{name}/{version}` --- soft delete
+---
 
--   `GET /api/search?q=term&limit=50` --- full-text search (**published only**)
+## Auth model
 
--   `GET /api/trending?days=7&limit=10`
+The CLI signs requests **when it can** (after `init`):  
+`X-Bashman-User`, `X-Bashman-Date`, `X-Bashman-Nonce`, `X-Bashman-Alg`, `Authorization: Bashman <sig>`
 
--   `GET /api/packages/{name}/download` --- download (**published only**)
+Server behavior:
 
--   `GET /api/stats`
+- `BASHMAN_REQUIRE_AUTH=1` → **legacy** `/scripts` requires valid Bashman auth headers.
+- `/api/*` endpoints currently **do not enforce** auth (subject to change).
+- Key registration: `POST /api/users` with `{nickname, public_key}`. The CLI does this during `init`.
 
--   `POST /api/users` --- register `{nickname, public_key}`
+---
 
-**Legacy endpoints (still used by the CLI):**
+## Web UI (for humans)
 
--   `GET /scripts` --- list quarantined names
+- `/` — minimal landing page with published packages and search box  
+- `/packages?q=term` — simple search  
+- `/packages/<name>` — package detail + download link
 
--   `POST /scripts` --- upload file → creates `0.1.0` **quarantined** entry
+If you hit legacy `/scripts` from a browser and get a 401/403, the server returns a small HTML page or redirects back to `/` for a friendlier experience; the CLI keeps getting JSON errors as before.
 
-**Auth:** Request-signing headers are supported (Ed25519, RSA-PSS-SHA256, ECDSA-SHA256).\
-When `BASHMAN_REQUIRE_AUTH=1`, the **legacy** `/scripts` routes require presence of Bashman auth headers. The new `/api/*` routes currently **do not enforce** auth.
+---
 
-### Create via HTTP (multipart form)
+## API reference (relevant to publish)
 
-Fields `keywords`, `dependencies`, `platforms` must be JSON-encoded strings.
+- `POST /api/packages` (multipart):
+  - **Required**: `name`, `version`, `description`, `file=@script.sh`
+  - **Optional**: `author`, `homepage`, `repository`, `license`, `shell_version`
+  - **JSON strings**: `keywords='[]'`, `dependencies='{}'`, `platforms='[]'`
 
-`BASE=http://127.0.0.1:8000
+- `POST /api/packages/{name}/{version}/publish`  
+- `GET /api/packages[?status=published|quarantined]`  
+- `GET /api/packages/{name}[?version=x.y.z]`  
+- `GET /api/packages/{name}/versions`  
+- `GET /api/packages/{name}/download[?version=x.y.z]`
 
-curl -X POST "$BASE/api/packages"\
-  -F name=hello-world\
-  -F version=1.0.0\
-  -F description="A hello world script"\
-  -F author="Your Name"\
-  -F homepage="https://example.org"\
-  -F repository="https://git.example/you/hello-world"\
-  -F license="MIT"\
-  -F keywords='["hello","demo"]'\
-  -F dependencies='{}'\
-  -F platforms='[]'\
-  -F shell_version="bash 5"\
-  -F file=@./hello.sh`
+`/scripts` (legacy): `GET` list (quarantined), `POST` upload (filename + `0.1.0`).
 
-**Notes:**
+---
 
--   The server **validates the shebang** of the uploaded file.
+## Migration notes
 
--   New packages enter **`quarantined`** status; publish via:
+- Existing `bashman publish ./file.sh` continues to work (legacy path).  
+- To populate **author/homepage/repository/license/keywords/dependencies/platforms/shell_version**, use either flags or a manifest, which switches you to the modern `/api/packages` flow.
+- “Latest” is chosen by **`created_at`**, not semver ordering (for now).
 
-    `curl -X POST "$BASE/api/packages/hello-world/1.0.0/publish"`
+---
 
--   "Latest" is selected by **`created_at`**, not by semver.
+## Environment
 
-* * * * *
+Server knobs you’re most likely to touch:
 
-Package metadata
-----------------
+- `BASHMAN_DB_PATH` — SQLite file path  
+- `BASHMAN_REQUIRE_AUTH=1` — enforce auth on `/scripts`  
+- `BASHMAN_AUTO_PUBLISH=1` — enable background auto-publish worker  
+- `BASHMAN_SHELLCHECK_MODE` — `off | best-effort | enforce`  
+- `BASHMAN_SHELLCHECK_ARGS` — passed to `shellcheck`  
 
-**Current reality:** there is **no manifest file**. The server does **not** read `bashman.json`.
+---
 
--   **Legacy upload (`/scripts`)**: package **name = filename**, **version = `0.1.0`**, status `quarantined`.
+### Example: curl rich publish (without the CLI)
 
--   **New API (`POST /api/packages`)**: send metadata via **multipart form**.
+```bash
+BASE=http://127.0.0.1:8000
 
-    -   **Required:** `name`, `version`, `description`, `file=@script.sh`
+curl -X POST "$BASE/api/packages"   -F name=hello-world   -F version=1.0.0   -F description="A hello world script"   -F author="Your Name"   -F homepage="https://example.org"   -F repository="https://git.example/you/hello-world"   -F license="MIT"   -F keywords='["hello","demo"]'   -F dependencies='{"coreutils":">=8.30"}'   -F platforms='["linux","darwin"]'   -F shell_version="bash 5"   -F file=@./hello.sh
+```
 
-    -   **Optional (strings):** `author`, `homepage`, `repository`, `license`, `shell_version`
+---
 
-    -   **JSON-encoded strings:** `keywords='[]'`, `dependencies='{}'`, `platforms='[]'`
+## Common pitfalls
 
--   Script content is stored **in SQLite as a BLOB**. No dependency resolution or installer exists yet.
-
-**Future (optional) manifest --- *not implemented***\
-A small `bashman.json` (name, version, description, etc.) may be introduced later. It's intentionally not documented as supported until code exists.
-
-* * * * *
-
-Roadmap
--------
-
-### Phase 1: Core Infrastructure
-
-1.  **DB abstraction** --- SQLite backend (shipped), modular for future engines
-
-2.  **Public-key registration + optional request-signing** --- `bashman init` (shipped)
-
-3.  **Metadata storage** --- timestamps, author, descriptions (shipped)
-
-4.  **Versioning** --- semver accepted; "latest" by `created_at` (current behavior)
-
-### Phase 2: User Experience
-
-1.  **Multi-tap support** *(planned)*
-
-2.  **Search API** --- **exists** (`/api/search`); CLI wrapper *planned*
-
-3.  **Web UI enhancements** *(planned)*
-
-4.  **Package management** --- install/uninstall + dependencies *(planned)*
-
-### Phase 3: Security & Quality
-
-1.  **Security pipeline** --- quarantine → scan → publish *(planned)*
-
-2.  **Linting** --- ShellCheck/shfmt *(planned)*
-
-3.  **Sandbox** --- Docker/bwrap/firejail *(planned)*
-
-4.  **Package signing** --- GPG verification *(planned)*
-
-### Phase 4: Ecosystem
-
-1.  **Functional tests** *(planned)*
-
-2.  **Badges/classifiers/trending** *(planned)*
-
-3.  **CI/CD integrations** *(planned)*
-
-4.  **AI-assisted review** *(exploratory; when mature)*
-
-**Current Status:** Phase 1 **in progress**. Core DB + API implemented; CLI covers `init`, `start`, and legacy `publish`/`list`.
-
-* * * * *
-
-Contributing
-------------
-
--   See `CODE_OF_CONDUCT.md` and `SECURITY.md`
-
--   Issues/MRs: [https://gitlab.ellisbs.co.uk/ian/bashman/-/issues](https://gitlab.ellisbs.co.uk/ian/bashman/-/issues?utm_source=chatgpt.com)\
-    Labels: `good first issue` - `enhancement` - `security` - `documentation`
+- **Empty metadata in DB** → you used the legacy publish. Use flags or `--manifest`.
+- **“Not published” on install** → publish manually or enable `BASHMAN_AUTO_PUBLISH=1`.
+- **Rejected on publish** → ShellCheck is `enforce` and failed; check logs or relax the mode.
