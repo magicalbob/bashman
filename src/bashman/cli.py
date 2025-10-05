@@ -25,6 +25,8 @@ VALID_STATUSES = ("published", "quarantined")
 
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
+HTTP_ERROR_MSG ="An HTTP error occurred",
+
 # ---- Config paths ----
 def get_config_dir() -> Path:
     return Path.home() / ".config" / "bashman"
@@ -505,7 +507,7 @@ def _names_from_published(data: Any) -> List[str]:
 def _list_quarantined(ctx: typer.Context, url: str) -> None:
     data = _fetch_json_safe(
         ctx, url,
-        on_http_msg="An HTTP error occurred",
+        on_http_msg=HTTP_ERROR_MSG,
         on_request_action="listing scripts",
         on_generic_msg="Failed to fetch JSON",
     )
@@ -515,7 +517,7 @@ def _list_quarantined(ctx: typer.Context, url: str) -> None:
 def _list_published(ctx: typer.Context, url: str, long: bool, columns: Optional[str], fmt: str) -> None:
     data = _fetch_json_safe(
         ctx, url,
-        on_http_msg="An HTTP error occurred",
+        on_http_msg=HTTP_ERROR_MSG,
         on_request_action="listing scripts",
         on_generic_msg="Failed to fetch JSON",
     )
@@ -556,7 +558,7 @@ def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: b
         resp.raise_for_status()
         typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error("An HTTP error occurred", e)
+        _echo_http_error(HTTP_ERROR_MSG, e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
@@ -627,7 +629,7 @@ def _modern_publish(
         msg = resp.json().get("message", "created/updated")
         typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error("An HTTP error occurred", e)
+        _echo_http_error(HTTP_ERROR_MSG, e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
