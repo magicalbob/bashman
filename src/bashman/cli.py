@@ -1,7 +1,6 @@
 import os
 import sys
 import re
-from typing import Optional
 import json
 import hashlib
 import uuid
@@ -10,7 +9,7 @@ from base64 import b64encode
 from urllib.parse import urlsplit
 from email.utils import formatdate
 from pathlib import Path
-from typing import Iterable, List, Union, Dict, Any
+from typing import Iterable, List, Union, Dict, Any, Optional
 
 import typer
 import httpx
@@ -380,7 +379,6 @@ def start(host: str = "127.0.0.1", port: int = 8000):
     ]
     os.execvp(cmd[0], cmd)
 
-
 @app.command()
 def publish(
     ctx: typer.Context,
@@ -410,7 +408,7 @@ def publish(
         typer.echo("Error: file does not exist", err=True)
         raise typer.Exit(1)
 
-    # Validate shebang quick check
+    # Quick shebang validation from the first kilobyte
     with open(path, "rb") as f:
         snippet = f.read(1024)
         first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
@@ -428,30 +426,44 @@ def publish(
         keyword, dep, platform, shell_version, manifest
     ])
 
-    # Read full bytes for signing and (if needed) upload
-    with open(path, "rb") as fh:
-        content_bytes = fh.read()
+    # Build signature over the full content
+    with open(path, "rb") as fh_for_hash:
+        content_bytes = fh_for_hash.read()
 
     if not wants_metadata:
-        # ----- legacy flow (unchanged) -----
+        # ----- legacy flow (unchanged API shape) -----
         url = f"{server}/scripts"
         headers = build_signed_headers(ctx, "POST", url, content_bytes)
-        with open(path, "rb") as fh_for_upload:
-            files = {"file": (os.path.basename(path), fh_for_upload)}
-            try:
-                if headers:
-                    resp = httpx.post(url, files=files, headers=headers)
-                else:
+        try:
+            with open(path, "rb") as fh_for_upload:
+                files = {"file": (os.path.basename(path), fh_for_upload)}
+                try:
+                    if headers:
+                        resp = httpx.post(url, files=files, headers=headers)
+                    else:
+                        resp = httpx.post(url, files=files)
+                except TypeError:
+                    # Back-compat for stubs/clients that don't accept headers=
                     resp = httpx.post(url, files=files)
-            except TypeError:
-                resp = httpx.post(url, files=files)
-            resp.raise_for_status()
-        typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
-        return
+                resp.raise_for_status()
+            typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
+            return
+        except httpx.HTTPStatusError as e:
+            typer.echo(
+                f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        except httpx.RequestError as e:
+            typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
+            raise typer.Exit(1)
+        except Exception as e:
+            typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
+            raise typer.Exit(1)
 
     # ----- modern flow with metadata -> /api/packages -----
     # Assemble metadata (manifest first, then CLI flags override)
-    meta = {}
+    meta: Dict[str, Any] = {}
     if manifest:
         try:
             with open(manifest) as mf:
@@ -482,7 +494,6 @@ def publish(
     # dependencies
     dep_map = meta.get("dependencies", {})
     if isinstance(dep_map, list):
-        # allow ["a=1","b=^2"] forms
         tmp = {}
         for entry in dep_map:
             if isinstance(entry, str) and "=" in entry:
@@ -494,7 +505,7 @@ def publish(
             k, v = d.split("=", 1)
             dep_map[k.strip()] = v.strip()
         else:
-            dep_map[d.strip()] = "*"  # bare name -> wildcard
+            dep_map[d.strip()] = "*"
     # platforms
     plats = meta.get("platforms", [])
     if isinstance(plats, str):
