@@ -10,103 +10,59 @@ from base64 import b64encode
 from urllib.parse import urlsplit
 from email.utils import formatdate
 from pathlib import Path
-from typing import Iterable, List, Union, Dict, Any, Optional
+from typing import Iterable, List, Union, Dict, Any, Optional, Tuple
 
 import typer
 import httpx
-import csv
-from io import StringIO
 
 app = typer.Typer()
 
-# ---- Constants (stable for tests) ----
+# ---- Constants ----
 DEFAULT_SERVER_URL = "https://bashman.ellisbs.co.uk"
-# Back-compat for tests and older callers
 DEFAULT_URL = DEFAULT_SERVER_URL
 SERVER_URL_HELP = "URL of the Bashman server"
 VALID_STATUSES = ("published", "quarantined")
 
-# Shell validation regex
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
-# Columns we can show from /api/packages
-ALL_COLUMNS = [
-    "name",
-    "version",
-    "description",
-    "author",
-    "homepage",
-    "repository",
-    "license",
-    "keywords",
-    "dependencies",
-    "platforms",
-    "shell_version",
-    "file_size",
-    "file_hash",
-    "status",
-    "created_at",
-    "updated_at",
-    "download_count",
-]
-LONG_PRESET = ["name", "version", "description", "author", "license"]
-
-
-# ---- Config path helpers (computed at call time; safe with Path.home() monkeypatch) ----
+# ---- Config paths ----
 def get_config_dir() -> Path:
     return Path.home() / ".config" / "bashman"
-
 
 def get_config_file() -> Path:
     return get_config_dir() / "config.json"
 
-
 def load_config() -> dict:
-    """Load the configuration file, or return {} if missing/unreadable."""
-    cfg_file = get_config_file()
     try:
-        with open(cfg_file) as f:
+        with open(get_config_file()) as f:
             return json.load(f)
     except Exception:
         return {}
 
-
 def save_config(cfg: dict) -> None:
-    cfg_file = get_config_file()
-    cfg_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_file, "w") as f:
+    p = get_config_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
         json.dump(cfg, f, indent=2)
 
-
 def default_install_dir() -> str:
-    """Conservative cross-platform default install directory."""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return os.path.join(base, "bashman", "bin")
-    # POSIX/macOS
     return str(Path.home() / ".local" / "bin")
-
 
 # ---- Key utilities ----
 def validate_private_key(key_path: str) -> tuple[bool, str]:
-    """
-    Validate that the key file exists and contains a plausible private key.
-    Returns (is_valid, msg_or_empty).
-    """
     key_file = Path(key_path)
-
     if not key_file.exists():
         return False, f"Key file does not exist: {key_path}"
     if not key_file.is_file():
         return False, f"Key path is not a file: {key_path}"
-
     try:
-        with open(key_file, "r") as f:
-            key_content = f.read().strip()
+        content = key_file.read_text().strip()
     except Exception as e:
         return False, f"Cannot read key file: {e}"
-
-    if not key_content:
+    if not content:
         return False, "Key file is empty"
 
     valid_headers = [
@@ -117,54 +73,43 @@ def validate_private_key(key_path: str) -> tuple[bool, str]:
         "-----BEGIN OPENSSH PRIVATE KEY-----",
         "-----BEGIN ENCRYPTED PRIVATE KEY-----",
     ]
-    if not any(key_content.startswith(h) for h in valid_headers):
+    if not any(content.startswith(h) for h in valid_headers):
         return False, "File does not appear to contain a valid private key (missing PEM header)"
 
     try:
         from cryptography.hazmat.primitives.serialization import (
-            load_pem_private_key,
-            load_ssh_private_key,
+            load_pem_private_key, load_ssh_private_key
         )
-        key_bytes = key_content.encode("utf-8")
+        b = content.encode("utf-8")
         try:
-            load_pem_private_key(key_bytes, password=None)
+            load_pem_private_key(b, password=None)
         except Exception:
             try:
-                load_ssh_private_key(key_bytes, password=None)
+                load_ssh_private_key(b, password=None)
             except Exception:
                 return False, "File contains invalid private key data"
     except ImportError:
         return True, "Warning: cryptography library not available, doing basic validation only"
 
-    if "-----BEGIN" in key_content and "-----END" not in key_content:
+    if "-----BEGIN" in content and "-----END" not in content:
         return False, "Private key appears malformed (missing END marker)"
-
     return True, ""
 
-
 def get_public_key(key_path: str) -> str:
-    """Derive and return the OpenSSH public key string from a private key file."""
     try:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.serialization import (
-            load_pem_private_key,
-            load_ssh_private_key,
+            load_pem_private_key, load_ssh_private_key
         )
-
-        with open(key_path, "rb") as key_file:
-            key_bytes = key_file.read()
-
+        key_bytes = Path(key_path).read_bytes()
         try:
-            private_key = load_pem_private_key(key_bytes, password=None)
+            pk = load_pem_private_key(key_bytes, password=None)
         except ValueError:
-            private_key = load_ssh_private_key(key_bytes, password=None)
-
-        public_key = private_key.public_key()
-        return public_key.public_bytes(
+            pk = load_ssh_private_key(key_bytes, password=None)
+        return pk.public_key().public_bytes(
             encoding=serialization.Encoding.OpenSSH,
             format=serialization.PublicFormat.OpenSSH,
         ).decode("utf-8")
-
     except ImportError:
         typer.echo(
             "Error: `cryptography` library is required to derive the public key. "
@@ -176,10 +121,8 @@ def get_public_key(key_path: str) -> str:
         typer.echo(f"Error: Could not derive public key from file: {e}", err=True)
         raise typer.Exit(1)
 
-
 # ---- Request signing (client) ----
 def _supports_headers_param(func) -> bool:
-    """True if a (possibly monkeypatched) function accepts **kwargs or a 'headers' kwarg."""
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
@@ -189,17 +132,10 @@ def _supports_headers_param(func) -> bool:
             return True
     return "headers" in sig.parameters
 
-
 def _canonical_string(method: str, path_qs: str, date_str: str, nonce: str, body_sha256_hex: str) -> bytes:
-    # METHOD \n PATH?QUERY \n RFC1123_DATE \n NONCE \n SHA256_HEX
     return f"{method.upper()}\n{path_qs}\n{date_str}\n{nonce}\n{body_sha256_hex}".encode("utf-8")
 
-
 def _load_private_key_for_signing(key_path: str):
-    """
-    Load a private key and return (signer_fn, alg_label) or (None, None) if unavailable.
-    Supports Ed25519, RSA (PSS-SHA256), ECDSA-P256/384 with SHA-256.
-    """
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_ssh_private_key
         from cryptography.hazmat.primitives import hashes as _hashes
@@ -209,8 +145,7 @@ def _load_private_key_for_signing(key_path: str):
         return None, None
 
     try:
-        with open(key_path, "rb") as fh:
-            key_bytes = fh.read()
+        key_bytes = Path(key_path).read_bytes()
         try:
             pk = load_pem_private_key(key_bytes, password=None)
         except Exception:
@@ -218,16 +153,12 @@ def _load_private_key_for_signing(key_path: str):
     except Exception:
         return None, None
 
-    # Ed25519
     try:
         if isinstance(getattr(pk, "public_key", lambda: None)(), _ed25519.Ed25519PublicKey):
-            def signer(msg: bytes) -> bytes:
-                return pk.sign(msg)
+            def signer(msg: bytes) -> bytes: return pk.sign(msg)
             return signer, "ed25519"
     except Exception:
         pass
-
-    # RSA (PSS/SHA-256)
     try:
         if isinstance(pk, _rsa.RSAPrivateKey):
             def signer(msg: bytes) -> bytes:
@@ -239,8 +170,6 @@ def _load_private_key_for_signing(key_path: str):
             return signer, "rsa-pss-sha256"
     except Exception:
         pass
-
-    # ECDSA (P-256/384)
     try:
         if isinstance(pk, _ec.EllipticCurvePrivateKey):
             def signer(msg: bytes) -> bytes:
@@ -248,29 +177,22 @@ def _load_private_key_for_signing(key_path: str):
             return signer, "ecdsa-sha256"
     except Exception:
         pass
-
     return None, None
 
-
 def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: bytes | None) -> dict:
-    """
-    Produce signature headers or return {} if we can't sign (no key, no crypto, etc.).
-    """
     try:
         cfg = ctx.obj or {}
         nickname = cfg.get("nickname")
         key_path = cfg.get("private_key_path")
         if not nickname or not key_path or not os.path.exists(key_path):
             return {}
-
         signer, alg = _load_private_key_for_signing(key_path)
         if signer is None:
             return {}
 
         parts = urlsplit(url)
         path_qs = parts.path + (f"?{parts.query}" if parts.query else "")
-        body = body_bytes or b""
-        body_sha256_hex = hashlib.sha256(body).hexdigest()
+        body_sha256_hex = hashlib.sha256((body_bytes or b"")).hexdigest()
         date_str = formatdate(usegmt=True)
         nonce = str(uuid.uuid4())
         msg = _canonical_string(method, path_qs, date_str, nonce, body_sha256_hex)
@@ -284,9 +206,7 @@ def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: 
             "Authorization": "Bashman " + b64encode(sig).decode("ascii"),
         }
     except Exception:
-        # Fail open: if anything about signing goes wrong, just don't sign.
         return {}
-
 
 # ---- Typer callback ----
 @app.callback(invoke_without_command=True)
@@ -300,7 +220,6 @@ def main(
 ):
     """
     Load config and inject defaults for commands.
-    Do not force `init`; commands that truly require config should check themselves.
     """
     cfg = load_config()
     resolved_server = (
@@ -308,7 +227,6 @@ def main(
         or os.environ.get("BASHMAN_SERVER_URL")
         or cfg.get("server_url", DEFAULT_SERVER_URL)
     )
-
     ctx.obj = {
         "server_url": resolved_server,
         "nickname": cfg.get("nickname"),
@@ -316,139 +234,81 @@ def main(
         "install_dir": cfg.get("install_dir"),
     }
 
+# ---- Common small helpers ----
+def _echo_http_error(prefix: str, e: httpx.HTTPStatusError) -> None:
+    typer.echo(f"✗ {prefix}: {e.response.status_code} - {e.response.text}", err=True)
 
-# ---- Commands ----
-@app.command()
-def init(
-    nickname: str = typer.Option(..., "--nickname", help="User nickname"),
-    key_file: str = typer.Option(..., "--key-file", help="Path to private key file"),
-    server_url: str = typer.Option(DEFAULT_SERVER_URL, "--server-url", help=SERVER_URL_HELP),
-    install_dir: str | None = typer.Option(None, "--install-dir", help="Default directory to install scripts (will be created if missing)"),
-):
-    """
-    Initialize Bashman configuration with server URL, user nickname, private key,
-    and a default install dir (defaults to ~/.local/bin on POSIX/macOS).
-    """
-    config_file = get_config_file()
-    config_dir = get_config_dir()
-    if config_file.exists():
-        typer.echo("Error: Bashman has already been initialized.", err=True)
-        raise typer.Exit(1)
-
-    expanded_key_path = os.path.expanduser(key_file)
-    is_valid, error_msg = validate_private_key(expanded_key_path)
-    if not is_valid:
-        typer.echo(f"Error: {error_msg}", err=True)
-        raise typer.Exit(1)
-    elif error_msg:
-        typer.echo(f"{error_msg}", err=True)
-
-    absolute_key_path = os.path.abspath(expanded_key_path)
-
-    # Pick default install dir if not provided (keeps backward compatibility with existing tests/automation)
-    chosen_install_dir = install_dir or default_install_dir()
-    install_dir_abs = os.path.abspath(os.path.expanduser(chosen_install_dir))
+def _http_get_json(url: str, headers: Dict[str, str] | None) -> Any:
     try:
-        Path(install_dir_abs).mkdir(parents=True, exist_ok=True)
-        # basic writability check
-        if not os.access(install_dir_abs, os.W_OK | os.X_OK):
-            typer.echo(f"✗ Install dir not writable: {install_dir_abs}", err=True)
-            raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Could not prepare install dir '{install_dir_abs}': {e}", err=True)
-        raise typer.Exit(1)
+        resp = httpx.get(url, headers=headers)
+    except TypeError:
+        resp = httpx.get(url)
+    resp.raise_for_status()
+    return resp.json()
 
-    # Register the user on the server
-    typer.echo("Registering user on the server...")
+def _http_get_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
     try:
-        public_key = get_public_key(absolute_key_path)
-        payload = {"nickname": nickname, "public_key": public_key}
+        resp = httpx.get(url, headers=headers)
+    except TypeError:
+        resp = httpx.get(url)
+    resp.raise_for_status()
+    return getattr(resp, "content", b"") or b""
 
-        resp = httpx.post(f"{server_url}/api/users", json=payload)
-        if resp.status_code in (200, 201):
-            typer.echo("✓ User registered successfully!")
-        elif resp.status_code == 409:
-            typer.echo("ℹ️ User already registered; proceeding to write local config.")
-        else:
-            resp.raise_for_status()
+def _safe_filename(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name)) or "script"
 
-    except httpx.HTTPStatusError as e:
-        typer.echo(
-            f"✗ An HTTP error occurred during registration: {e.response.status_code} - {e.response.text}",
-            err=True,
-        )
-        raise typer.Exit(1)
-    except httpx.RequestError as e:
-        typer.echo(f"✗ An error occurred while registering: {e}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
-        raise typer.Exit(1)
+def _ensure_dir_writable(dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    if not dest.is_dir():
+        raise RuntimeError(f"Install destination is not a directory: {dest}")
+    if not os.access(dest, os.W_OK | os.X_OK):
+        raise RuntimeError(f"Install destination not writable: {dest}")
 
-    # Write config
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config = {
-        "server_url": server_url,
-        "nickname": nickname,
-        "private_key_path": absolute_key_path,
-        "install_dir": install_dir_abs,
-    }
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
+def _atomic_write(path: Path, data: bytes, mode: int) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp") if path.suffix else Path(str(path) + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
 
-    typer.echo(f"Bashman configuration created at {config_file}")
-    typer.echo(f"User: {nickname}")
-    typer.echo(f"Key: {absolute_key_path}")
-    typer.echo(f"Server: {server_url}")
-    typer.echo(f"Install dir: {install_dir_abs}")
+def _parse_mode_opt(mode: str | None) -> int:
+    if not mode:
+        return 0o755
+    try:
+        return int(mode, 8)
+    except Exception:
+        typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
+        raise typer.Exit(2)
 
+def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
+    if dest_opt:
+        dest_dir = os.path.abspath(os.path.expanduser(dest_opt))
+    else:
+        configured = cfg.get("install_dir")
+        if not configured:
+            typer.echo(
+                "✗ No install directory configured. Re-run `bashman init --install-dir PATH` or pass --dest.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        dest_dir = os.path.abspath(os.path.expanduser(configured))
+    dest_path = Path(dest_dir)
+    _ensure_dir_writable(dest_path)
+    return dest_path
 
-@app.command()
-def start(host: str = "127.0.0.1", port: int = 8000):
-    """Launch the FastAPI server via uvicorn."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "bashman.server.app:app",
-        "--host",
-        host,
-        "--port",
-        str(port),
-    ]
-    os.execvp(cmd[0], cmd)
+def _meta_url(server: str, name: str, version: str | None) -> str:
+    return f"{server}/api/packages/{name}" + (f"?version={version}" if version else "")
 
+def _download_url(server: str, name: str, version: str | None) -> str:
+    return f"{server}/api/packages/{name}/download" + (f"?version={version}" if version else "")
 
-@app.command()
-def publish(
-    ctx: typer.Context,
-    path: str,
-    # NEW optional metadata flags
-    name: Optional[str] = typer.Option(None, "--name", help="Package name (default: filename)"),
-    version: Optional[str] = typer.Option(None, "--version", "-v", help="Version (e.g. 1.2.3; default: 0.1.0 for legacy)"),
-    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description"),
-    author: Optional[str] = typer.Option(None, "--author", help="Author"),
-    homepage: Optional[str] = typer.Option(None, "--homepage", help="Homepage URL"),
-    repository: Optional[str] = typer.Option(None, "--repository", help="Repository URL"),
-    license: Optional[str] = typer.Option(None, "--license", help="SPDX id or text"),
-    keyword: list[str] = typer.Option([], "--keyword", "-k", help="Add a keyword (repeatable)"),
-    dep: list[str] = typer.Option([], "--dep", help="Dependency (repeatable) as name=version"),
-    platform: list[str] = typer.Option([], "--platform", help="Target platform (repeatable)"),
-    shell_version: Optional[str] = typer.Option(None, "--shell-version", help="Shell version requirement"),
-    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to JSON manifest with fields"),
-):
-    """
-    Upload a shell script to the server (signed if possible).
-    If any metadata flags (or --manifest) are provided, use the modern /api/packages endpoint.
-    Otherwise, fall back to legacy /scripts for maximum compatibility.
-    """
-    server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
+def _verify_published(meta: Dict[str, Any]) -> None:
+    status = str(meta.get("status", "")).lower()
+    if status != "published":
+        typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
+        raise typer.Exit(4)
 
-    if not os.path.isfile(path):
-        typer.echo("Error: file does not exist", err=True)
-        raise typer.Exit(1)
-
-    # Quick shebang validation from the first kilobyte
+def _validate_shebang_or_exit(path: str) -> None:
     with open(path, "rb") as f:
         snippet = f.read(1024)
         first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
@@ -460,50 +320,94 @@ def publish(
             )
             raise typer.Exit(1)
 
-    # Decide flow
-    wants_metadata = any([
-        name, version, description, author, homepage, repository, license,
-        keyword, dep, platform, shell_version, manifest
-    ])
+def _wants_modern_upload(
+    name: Optional[str],
+    version: Optional[str],
+    any_arrays: bool,
+    has_manifest: bool,
+    set_pairs: List[str],
+    desc_given: bool,
+    author_given: bool,
+) -> bool:
+    return any([name, version, any_arrays, has_manifest, set_pairs, desc_given, author_given])
 
-    # Build signature over the full content
-    with open(path, "rb") as fh_for_hash:
-        content_bytes = fh_for_hash.read()
+def _parse_set_pairs(pairs: List[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in pairs:
+        if "=" not in item:
+            typer.echo(f"✗ --set must be key=value (got: {item})", err=True)
+            raise typer.Exit(2)
+        k, v = item.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
 
-    if not wants_metadata:
-        # ----- legacy flow (unchanged API shape) -----
-        url = f"{server}/scripts"
-        headers = build_signed_headers(ctx, "POST", url, content_bytes)
-        try:
-            with open(path, "rb") as fh_for_upload:
-                files = {"file": (os.path.basename(path), fh_for_upload)}
-                try:
-                    if headers:
-                        resp = httpx.post(url, files=files, headers=headers)
-                    else:
-                        resp = httpx.post(url, files=files)
-                except TypeError:
-                    # Back-compat for stubs/clients that don't accept headers=
-                    resp = httpx.post(url, files=files)
-                resp.raise_for_status()
-            typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
-            return
-        except httpx.HTTPStatusError as e:
-            typer.echo(
-                f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}",
-                err=True,
-            )
-            raise typer.Exit(1)
-        except httpx.RequestError as e:
-            typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
-            raise typer.Exit(1)
-        except Exception as e:
-            typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
-            raise typer.Exit(1)
+def _normalize_keywords(existing: Any, extra: List[str]) -> List[str]:
+    kw = existing or []
+    if isinstance(kw, str):
+        kw = [x.strip() for x in kw.split(",") if x.strip()]
+    return list(kw) + list(extra)
 
-    # ----- modern flow with metadata -> /api/packages -----
-    # Assemble metadata (manifest first, then CLI flags override)
+def _normalize_deps(existing: Any, extra: List[str]) -> Dict[str, str]:
+    dep_map: Dict[str, str] = {}
+    if isinstance(existing, dict):
+        dep_map.update(existing)
+    elif isinstance(existing, list):
+        for entry in existing:
+            if isinstance(entry, str) and "=" in entry:
+                k, v = entry.split("=", 1)
+                dep_map[k.strip()] = v.strip()
+    for d in extra:
+        if "=" in d:
+            k, v = d.split("=", 1)
+            dep_map[k.strip()] = v.strip()
+        else:
+            dep_map[d.strip()] = "*"
+    return dep_map
+
+def _normalize_platforms(existing: Any, extra: List[str]) -> List[str]:
+    plats = existing or []
+    if isinstance(plats, str):
+        plats = [x.strip() for x in plats.split(",") if x.strip()]
+    return list(plats) + list(extra)
+
+def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: bytes) -> None:
+    url = f"{server}/scripts"
+    headers = build_signed_headers(ctx, "POST", url, content_bytes)
+    try:
+        with open(path, "rb") as fh:
+            files = {"file": (os.path.basename(path), fh)}
+            try:
+                resp = httpx.post(url, files=files, headers=headers or None)
+            except TypeError:
+                resp = httpx.post(url, files=files)
+        resp.raise_for_status()
+        typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
+    except httpx.HTTPStatusError as e:
+        _echo_http_error("An HTTP error occurred", e)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
+        raise typer.Exit(1)
+
+def _modern_publish(
+    ctx: typer.Context,
+    server: str,
+    path: str,
+    content_bytes: bytes,
+    *,
+    name: Optional[str],
+    version: Optional[str],
+    manifest: Optional[str],
+    set_pairs: Dict[str, str],
+    keywords: List[str],
+    deps: List[str],
+    platforms: List[str],
+) -> None:
     meta: Dict[str, Any] = {}
+
     if manifest:
         try:
             with open(manifest) as mf:
@@ -515,45 +419,20 @@ def publish(
             typer.echo(f"✗ Failed to read manifest: {e}", err=True)
             raise typer.Exit(2)
 
-    # Fill/override from CLI options
+    # Required-ish fields
     meta.setdefault("name", name or os.path.basename(path))
     meta.setdefault("version", version or "0.1.0")
-    if description is not None: meta["description"] = description
-    if author is not None: meta["author"] = author
-    if homepage is not None: meta["homepage"] = homepage
-    if repository is not None: meta["repository"] = repository
-    if license is not None: meta["license"] = license
-    if shell_version is not None: meta["shell_version"] = shell_version
 
-    # Normalize list/map fields to the exact wire format the API expects (JSON-encoded strings)
-    # keywords
-    kw = meta.get("keywords", [])
-    if isinstance(kw, str):
-        kw = [x.strip() for x in kw.split(",") if x.strip()]
-    kw = list(kw) + list(keyword)
-    # dependencies
-    dep_map = meta.get("dependencies", {})
-    if isinstance(dep_map, list):
-        # allow ["a=1","b=^2"] forms
-        tmp = {}
-        for entry in dep_map:
-            if isinstance(entry, str) and "=" in entry:
-                k, v = entry.split("=", 1); tmp[k.strip()] = v.strip()
-        dep_map = tmp or {}
-    dep_map = dict(dep_map)
-    for d in dep:
-        if "=" in d:
-            k, v = d.split("=", 1)
-            dep_map[k.strip()] = v.strip()
-        else:
-            dep_map[d.strip()] = "*"  # bare name -> wildcard
-    # platforms
-    plats = meta.get("platforms", [])
-    if isinstance(plats, str):
-        plats = [x.strip() for x in plats.split(",") if x.strip()]
-    plats = list(plats) + list(platform)
+    # Simple string fields via --set key=value
+    for k in ("description", "author", "homepage", "repository", "license", "shell_version"):
+        if k in set_pairs:
+            meta[k] = set_pairs[k]
 
-    # Build form
+    # Collections
+    kw = _normalize_keywords(meta.get("keywords", []), keywords)
+    dep_map = _normalize_deps(meta.get("dependencies", {}), deps)
+    plats = _normalize_platforms(meta.get("platforms", []), platforms)
+
     data = {
         "name": str(meta["name"]),
         "version": str(meta["version"]),
@@ -571,14 +450,14 @@ def publish(
     url = f"{server}/api/packages"
     headers = build_signed_headers(ctx, "POST", url, content_bytes)
     try:
-        with open(path, "rb") as fh_for_upload:
-            files = {"file": (os.path.basename(path), fh_for_upload)}
+        with open(path, "rb") as fh:
+            files = {"file": (os.path.basename(path), fh)}
             resp = httpx.post(url, data=data, files=files, headers=headers or None)
         resp.raise_for_status()
         msg = resp.json().get("message", "created/updated")
         typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
+        _echo_http_error("An HTTP error occurred", e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
@@ -587,7 +466,134 @@ def publish(
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
 
+# ---- Commands ----
+@app.command()
+def init(
+    nickname: str = typer.Option(..., "--nickname", help="User nickname"),
+    key_file: str = typer.Option(..., "--key-file", help="Path to private key file"),
+    server_url: str = typer.Option(DEFAULT_SERVER_URL, "--server-url", help=SERVER_URL_HELP),
+    install_dir: str | None = typer.Option(None, "--install-dir", help="Default directory to install scripts (created if missing)"),
+):
+    """
+    Initialize Bashman configuration and register your public key on the server.
+    """
+    config_file = get_config_file()
+    if config_file.exists():
+        typer.echo("Error: Bashman has already been initialized.", err=True)
+        raise typer.Exit(1)
 
+    expanded_key_path = os.path.expanduser(key_file)
+    is_valid, msg = validate_private_key(expanded_key_path)
+    if not is_valid:
+        typer.echo(f"Error: {msg}", err=True)
+        raise typer.Exit(1)
+    elif msg:
+        typer.echo(msg, err=True)
+
+    absolute_key_path = os.path.abspath(expanded_key_path)
+    chosen_install_dir = install_dir or default_install_dir()
+    install_dir_abs = os.path.abspath(os.path.expanduser(chosen_install_dir))
+    try:
+        Path(install_dir_abs).mkdir(parents=True, exist_ok=True)
+        if not os.access(install_dir_abs, os.W_OK | os.X_OK):
+            typer.echo(f"✗ Install dir not writable: {install_dir_abs}", err=True)
+            raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Could not prepare install dir '{install_dir_abs}': {e}", err=True)
+        raise typer.Exit(1)
+
+    # Register user
+    typer.echo("Registering user on the server...")
+    try:
+        public_key = get_public_key(absolute_key_path)
+        payload = {"nickname": nickname, "public_key": public_key}
+        resp = httpx.post(f"{server_url}/api/users", json=payload)
+        if resp.status_code in (200, 201):
+            typer.echo("✓ User registered successfully!")
+        elif resp.status_code == 409:
+            typer.echo("ℹ️ User already registered; proceeding to write local config.")
+        else:
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _echo_http_error("An HTTP error occurred during registration", e)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ An error occurred while registering: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
+        raise typer.Exit(1)
+
+    save_config({
+        "server_url": server_url,
+        "nickname": nickname,
+        "private_key_path": absolute_key_path,
+        "install_dir": install_dir_abs,
+    })
+    typer.echo(f"Bashman configuration created at {config_file}")
+    typer.echo(f"User: {nickname}")
+    typer.echo(f"Key: {absolute_key_path}")
+    typer.echo(f"Server: {server_url}")
+    typer.echo(f"Install dir: {install_dir_abs}")
+
+@app.command()
+def start(host: str = "127.0.0.1", port: int = 8000):
+    """Launch the FastAPI server via uvicorn."""
+    cmd = [sys.executable, "-m", "uvicorn", "bashman.server.app:app", "--host", host, "--port", str(port)]
+    os.execvp(cmd[0], cmd)
+
+@app.command()
+def publish(
+    ctx: typer.Context,
+    path: str,
+    name: Optional[str] = typer.Option(None, "--name", help="Package name (default: filename)"),
+    version: Optional[str] = typer.Option(None, "--version", "-v", help="Version (e.g. 1.2.3; default: 0.1.0 for legacy)"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to JSON manifest with fields"),
+    keyword: List[str] = typer.Option([], "--keyword", "-k", help="Add a keyword (repeatable)"),
+    dep: List[str] = typer.Option([], "--dep", help="Dependency (repeatable) as name=version"),
+    platform: List[str] = typer.Option([], "--platform", help="Target platform (repeatable)"),
+    set: List[str] = typer.Option([], "--set", "-s", help="Override simple metadata as key=value (description,author,homepage,repository,license,shell_version)"),
+    # Back-compat flags expected by tests:
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description (shorthand for --set description=...)"),
+    author: Optional[str] = typer.Option(None, "--author", help="Author (shorthand for --set author=...)"),
+):
+    """
+    Upload a shell script to the server (signed if possible).
+
+    If any metadata flags, `--set`, or `--manifest` are provided, use the modern /api/packages endpoint.
+    Otherwise, fall back to legacy /scripts for maximum compatibility.
+    """
+    server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
+    if not os.path.isfile(path):
+        typer.echo("Error: file does not exist", err=True)
+        raise typer.Exit(1)
+
+    _validate_shebang_or_exit(path)
+
+    with open(path, "rb") as fh:
+        content_bytes = fh.read()
+
+    wants_modern = _wants_modern_upload(
+        name, version, any([keyword, dep, platform]), bool(manifest), set,
+        desc_given=description is not None, author_given=author is not None
+    )
+    if not wants_modern:
+        _legacy_publish(ctx, server, path, content_bytes)
+        return
+
+    set_pairs = _parse_set_pairs(set)
+    if description is not None:
+        set_pairs.setdefault("description", description)
+    if author is not None:
+        set_pairs.setdefault("author", author)
+
+    _modern_publish(
+        ctx, server, path, content_bytes,
+        name=name, version=version, manifest=manifest,
+        set_pairs=set_pairs, keywords=keyword, deps=dep, platforms=platform
+    )
+
+# ---- list helpers ----
 def _validate_status(status: str) -> str:
     s = (status or "published").lower()
     if s not in VALID_STATUSES:
@@ -595,343 +601,122 @@ def _validate_status(status: str) -> str:
         raise typer.Exit(2)
     return s
 
-
 def _url_for(server: str, status: str) -> str:
     if status == "quarantined":
-        # Legacy endpoint used by old flows/tests
         return f"{server}/scripts"
-    # Modern API for published packages
     return f"{server}/api/packages?status=published&limit=1000"
 
-
-def _fetch_json(url: str, headers: Dict[str, str] | None) -> Any:
-    """
-    Fetch JSON with a compatibility fallback:
-    if a monkeypatched/legacy httpx.get doesn't accept headers=, retry without it.
-    """
-    try:
-        resp = httpx.get(url, headers=headers)
-    except TypeError:
-        # Back-compat for test stubs / older clients that don't accept headers kwarg
-        resp = httpx.get(url)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _fetch_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
-    try:
-        resp = httpx.get(url, headers=headers)
-    except TypeError:
-        resp = httpx.get(url)
-    resp.raise_for_status()
-    return getattr(resp, "content", b"") or b""
-
+def _render_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
+    # compute widths
+    widths: List[int] = []
+    for i, c in enumerate(columns):
+        w = len(c)
+        for r in rows:
+            cell = r.get(c, "")
+            s = json.dumps(cell) if isinstance(cell, (dict, list)) else str(cell or "")
+            w = max(w, len(s))
+        widths.append(w)
+    # header
+    header = "  ".join(c.ljust(widths[i]) for i, c in enumerate(columns))
+    typer.echo(header)
+    typer.echo("  ".join("-" * widths[i] for i in range(len(columns))))
+    # rows
+    for r in rows:
+        cells = []
+        for i, c in enumerate(columns):
+            v = r.get(c, "")
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            cells.append(str(v or "").ljust(widths[i]))
+        typer.echo("  ".join(cells))
 
 def _names_from_legacy(data: Any) -> List[str]:
-    # legacy shape: list[str]
-    if isinstance(data, list):
-        return [str(x) for x in data if str(x)]
-    return []
-
+    return [str(x) for x in data] if isinstance(data, list) else []
 
 def _names_from_published(data: Any) -> List[str]:
-    """
-    published shape: list[dict] normally, but be tolerant of list[str] (test stubs)
-    """
     if not isinstance(data, list):
         return []
-    names: List[str] = []
+    out: List[str] = []
     for item in data:
         if isinstance(item, dict):
-            name = item.get("name", "")
+            nm = item.get("name", "")
         else:
-            name = str(item)
-        if name:
-            names.append(name)
-    return names
-
-
-def _safe_filename(name: str) -> str:
-    base = os.path.basename(name)
-    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base)
-    return cleaned or "script"
-
-
-def _ensure_dest_dir(dest: Path) -> None:
-    dest.mkdir(parents=True, exist_ok=True)
-    if not dest.is_dir():
-        raise RuntimeError(f"Install destination is not a directory: {dest}")
-    if not os.access(dest, os.W_OK | os.X_OK):
-        raise RuntimeError(f"Install destination not writable: {dest}")
-
-
-def _atomic_write(path: Path, data: bytes, mode: int) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp") if path.suffix else Path(str(path) + ".tmp")
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
-
-
-def _parse_mode_opt(mode: str | None) -> int:
-    """Parse an octal mode string (e.g. '755'); on bad input, print usage error and Exit 2."""
-    if not mode:
-        return 0o755
-    try:
-        return int(mode, 8)
-    except Exception:
-        typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
-        raise typer.Exit(2)
-
-
-def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
-    """
-    Resolve the destination directory:
-      - If --dest provided, use it.
-      - Else require cfg['install_dir']; if missing → usage error Exit 2.
-      - Ensure directory exists and is writable/enterable (via _ensure_dest_dir).
-    """
-    if dest_opt:
-        dest_dir = os.path.abspath(os.path.expanduser(dest_opt))
-    else:
-        configured = cfg.get("install_dir")
-        if not configured:
-            typer.echo(
-                "✗ No install directory configured. Re-run `bashman init --install-dir PATH` or pass --dest.",
-                err=True,
-            )
-            raise typer.Exit(2)
-        dest_dir = os.path.abspath(os.path.expanduser(configured))
-    dest_path = Path(dest_dir)
-    _ensure_dest_dir(dest_path)
-    return dest_path
-
-
-# -------- extra helpers to flatten `install` --------
-def _meta_url(server: str, name: str, version: str | None) -> str:
-    return f"{server}/api/packages/{name}" + (f"?version={version}" if version else "")
-
-
-def _download_url(server: str, name: str, version: str | None) -> str:
-    return f"{server}/api/packages/{name}/download" + (f"?version={version}" if version else "")
-
-
-def _fetch_json_safe(ctx: typer.Context, url: str) -> Dict[str, Any]:
-    headers = build_signed_headers(ctx, "GET", url, b"") or None
-    try:
-        return _fetch_json(url, headers)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
-        raise typer.Exit(1)
-
-
-def _fetch_bytes_safe(ctx: typer.Context, url: str) -> bytes:
-    headers = build_signed_headers(ctx, "GET", url, b"") or None
-    try:
-        data = _fetch_bytes(url, headers)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to download: {e}", err=True)
-        raise typer.Exit(1)
-    if not data:
-        typer.echo("✗ Empty download from server", err=True)
-        raise typer.Exit(1)
-    return data
-
-
-def _ensure_published(meta: Dict[str, Any]) -> None:
-    status = str(meta.get("status", "")).lower()
-    if status != "published":
-        typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
-        raise typer.Exit(4)
-
-
-def _determine_target_file(dest_path: Path, target_name: str, force: bool) -> Path:
-    target_file = dest_path / target_name
-    if target_file.exists() and not force:
-        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
-        raise typer.Exit(3)
-    return target_file
-
-
-def _verify_hash(meta: Dict[str, Any], data: bytes, skip: bool) -> None:
-    if skip:
-        return
-    want = (meta.get("file_hash") or "").lower()
-    got = hashlib.sha256(data).hexdigest().lower()
-    if want and got != want:
-        typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
-        raise typer.Exit(5)
-
-
-def _install_write(target_file: Path, data: bytes, file_mode: int) -> None:
-    try:
-        _atomic_write(target_file, data, file_mode)
-    except Exception as e:
-        typer.echo(f"✗ Failed to write {target_file}: {e}", err=True)
-        raise typer.Exit(1)
-
-
-# ---------- list formatting helpers ----------
-def _validate_columns(cols: List[str]) -> List[str]:
-    bad = [c for c in cols if c not in ALL_COLUMNS]
-    if bad:
-        typer.echo(f"✗ Unknown column(s): {', '.join(bad)}", err=True)
-        typer.echo(f"  Allowed: {', '.join(ALL_COLUMNS)}", err=True)
-        raise typer.Exit(2)
-    return cols
-
-
-def _coerce_value(col: str, item: Dict[str, Any]) -> str:
-    v = item.get(col, "")
-    if v is None:
-        return ""
-    if col in ("keywords", "platforms"):
-        if isinstance(v, list):
-            return ", ".join(map(str, v))
-        return str(v)
-    if col == "dependencies":
-        if isinstance(v, dict):
-            # format as "name=ver name2=ver2"
-            return " ".join(f"{k}={v}" for k, v in v.items())
-        return str(v)
-    return str(v)
-
-
-def _render_table(rows: List[Dict[str, Any]], cols: List[str]) -> None:
-    # Determine widths
-    widths = {c: len(c) for c in cols}
-    for it in rows:
-        for c in cols:
-            widths[c] = max(widths[c], len(_coerce_value(c, it)))
-
-    # Header
-    header = "  ".join(c.ljust(widths[c]) for c in cols)
-    typer.echo(header)
-    typer.echo("  ".join("-" * widths[c] for c in cols))
-
-    # Rows
-    for it in rows:
-        line = "  ".join(_coerce_value(c, it).ljust(widths[c]) for c in cols)
-        typer.echo(line)
-
-
-def _render_delimited(rows: List[Dict[str, Any]], cols: List[str], delimiter: str) -> None:
-    buf = StringIO()
-    writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
-    writer.writerow(cols)
-    for it in rows:
-        writer.writerow([_coerce_value(c, it) for c in cols])
-    typer.echo(buf.getvalue().rstrip("\n"))
-
-
-def _render_json(rows: List[Dict[str, Any]], cols: List[str]) -> None:
-    # Only include selected columns
-    out = [{c: _coerce_value(c, it) for c in cols} for it in rows]
-    typer.echo(json.dumps(out, indent=2))
-
+            nm = str(item)
+        if nm:
+            out.append(nm)
+    return out
 
 @app.command(name="list")
-def _list(
+def list_cmd(
     ctx: typer.Context,
     status: str = typer.Option(
-        "published",
-        "--status",
+        "published", "--status",
         help="Which status to list: 'published' (default) or 'quarantined' (legacy).",
     ),
-    long: bool = typer.Option(
-        False, "--long", "-l",
-        help="Show preset columns (name, version, description, author, license). Defaults to --format table if not specified.",
-    ),
-    fmt: str = typer.Option(
-        "names", "--format", "-F",
-        help="One of: names|table|csv|tsv|json (default: names)",
-    ),
-    columns: List[str] = typer.Option(
-        None, "--columns", "-c",
-        help="Comma-separated or repeated list of columns to show (published only). "
-             f"Allowed: {', '.join(ALL_COLUMNS)}",
-    ),
+    long: bool = typer.Option(False, "--long", help="Show a table with common metadata columns."),
+    columns: Optional[str] = typer.Option(None, "--columns", "-c", help="Comma-separated column names (published API only)"),
+    format: str = typer.Option("plain", "--format", "-F", help="plain|csv|tsv|json (published API only)"),
 ):
     """
     List packages by status.
-    Default lists *published* packages from the modern API; use --status quarantined for legacy uploads.
+    Default lists published packages; use --status quarantined for legacy uploads.
     """
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
     status = _validate_status(status)
-
-    # Parse columns argument (support comma-separated)
-    requested_cols: List[str] = []
-    if columns:
-        for entry in columns:
-            requested_cols.extend([c.strip() for c in entry.split(",") if c.strip()])
-        requested_cols = _validate_columns(requested_cols)
-
-    # Validate format
-    if fmt not in ("names", "table", "csv", "tsv", "json"):
-        typer.echo("✗ --format must be one of: names|table|csv|tsv|json", err=True)
-        raise typer.Exit(2)
-
-    # If user asked for extra columns (via --long/--columns) but kept the default
-    # format (names), switch to a readable table by default.
-    if fmt == "names" and (long or requested_cols):
-        fmt = "table"
-
     url = _url_for(server, status)
 
     try:
         headers = build_signed_headers(ctx, "GET", url, b"") or None
-        data = _fetch_json(url, headers)
-
-        # Legacy quarantined: names only
+        data = _http_get_json(url, headers)
         if status == "quarantined":
-            names = _names_from_legacy(data)
-            if long or requested_cols or fmt != "names":
-                typer.echo("⚠ Legacy /scripts endpoint does not provide metadata; showing names only.", err=True)
-            for name in names:
+            # legacy: names only
+            for name in _names_from_legacy(data):
                 typer.echo(name)
             return
 
-        # Published: may have rich metadata
-        if fmt == "names" and not (long or requested_cols):
-            # original simple behavior
-            for name in _names_from_published(data):
-                typer.echo(name)
-            return
-
-        # Build rows as list[dict]
-        rows: List[Dict[str, Any]] = []
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    rows.append(item)
-                else:
-                    # tolerate list[str]
-                    rows.append({"name": str(item)})
-
-        # Decide columns to show
-        cols = requested_cols or (LONG_PRESET if long else ["name"])
-
-        # Render according to format
-        if fmt == "table":
+        # published API: can format
+        rows: List[Dict[str, Any]] = [x for x in data if isinstance(x, dict)]
+        if columns:
+            cols = [c.strip() for c in columns.split(",") if c.strip()]
+            # Validate requested columns
+            known = {
+                "name","version","description","author","homepage","repository","license",
+                "keywords","dependencies","platforms","shell_version","file_size","file_hash",
+                "status","created_at","updated_at","download_count"
+            }
+            unknown = [c for c in cols if c not in known]
+            if unknown:
+                typer.echo(f"✗ Unknown column(s): {', '.join(unknown)}", err=True)
+                raise typer.Exit(2)
+            if format == "json":
+                out = [{k: r.get(k) for k in cols} for r in rows]
+                typer.echo(json.dumps(out, indent=2))
+                return
+            if format in ("csv", "tsv"):
+                sep = "," if format == "csv" else "\t"
+                typer.echo(sep.join(cols))
+                for r in rows:
+                    vals = []
+                    for k in cols:
+                        v = r.get(k, "")
+                        if isinstance(v, (dict, list)):
+                            v = json.dumps(v)
+                        vals.append(str(v))
+                    typer.echo(sep.join(vals))
+                return
             _render_table(rows, cols)
-        elif fmt == "csv":
-            _render_delimited(rows, cols, delimiter=",")
-        elif fmt == "tsv":
-            _render_delimited(rows, cols, delimiter="\t")
-        elif fmt == "json":
-            _render_json(rows, cols)
-        else:  # names
-            for it in rows:
-                typer.echo(_coerce_value("name", it))
+            return
+
+        if long:
+            _render_table(rows, ["name", "version", "description", "author", "license"])
+            return
+
+        # Just names by default
+        for name in _names_from_published(data):
+            typer.echo(name)
 
     except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
+        _echo_http_error("An HTTP error occurred", e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while listing scripts: {e}", err=True)
@@ -942,7 +727,6 @@ def _list(
     except Exception as e:
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
-
 
 @app.command()
 def install(
@@ -960,25 +744,57 @@ def install(
     """
     cfg = ctx.obj or {}
     server = cfg.get("server_url", DEFAULT_SERVER_URL)
-
-    # 1) resolve destination (usage error → 2; env/perm → 1)
     dest_path = _resolve_install_dir(cfg, dest)
-    # 2) decide filename and collision handling
-    target_file = _determine_target_file(dest_path, as_name or _safe_filename(name), force)
-    # 3) fetch metadata
-    meta = _fetch_json_safe(ctx, _meta_url(server, name, version))
-    # 4) ensure published
-    _ensure_published(meta)
-    # 5) download bytes
-    data = _fetch_bytes_safe(ctx, _download_url(server, name, version))
-    # 6) verify (unless skipped)
-    _verify_hash(meta, data, skip=no_verify)
-    # 7) parse mode & write
+    target_file = (dest_path / (as_name or _safe_filename(name)))
+    if target_file.exists() and not force:
+        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
+        raise typer.Exit(3)
+
+    meta_url = _meta_url(server, name, version)
+    dl_url = _download_url(server, name, version)
+
+    # Fetch meta
+    try:
+        meta = _http_get_json(meta_url, build_signed_headers(ctx, "GET", meta_url, b"") or None)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
+        raise typer.Exit(1)
+
+    _verify_published(meta)
+
+    # Download
+    try:
+        data = _http_get_bytes(dl_url, build_signed_headers(ctx, "GET", dl_url, b"") or None)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ Failed to download: {e}", err=True)
+        raise typer.Exit(1)
+
+    if not data:
+        typer.echo("✗ Empty download from server", err=True)
+        raise typer.Exit(1)
+
+    # Verify hash unless skipped
+    if not no_verify:
+        want = (meta.get("file_hash") or "").lower()
+        got = hashlib.sha256(data).hexdigest().lower()
+        if want and got != want:
+            typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
+            raise typer.Exit(5)
+
     file_mode = _parse_mode_opt(mode)
-    _install_write(target_file, data, file_mode)
+    try:
+        _atomic_write(target_file, data, file_mode)
+    except Exception as e:
+        typer.echo(f"✗ Failed to write {target_file}: {e}", err=True)
+        raise typer.Exit(1)
 
     typer.echo(f"✓ Installed {name}{(':'+version) if version else ''} → {target_file}")
-
 
 if __name__ == "__main__":
     app()
