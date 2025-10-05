@@ -26,6 +26,7 @@ VALID_STATUSES = ("published", "quarantined")
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
 HTTP_ERROR_MSG ="An HTTP error occurred",
+FAILED_TO_FETCH_JSON = "Failed to fetch JSON"
 
 # ---- Config paths ----
 def get_config_dir() -> Path:
@@ -260,9 +261,9 @@ def _fetch_json_safe(
     ctx: typer.Context,
     url: str,
     *,
-    on_http_msg: str = "Failed to fetch JSON",
+    on_http_msg: str = FAILED_TO_FETCH_JSON,
     on_request_action: Optional[str] = None,
-    on_generic_msg: str = "Failed to fetch JSON",
+    on_generic_msg: str = FAILED_TO_FETCH_JSON,
 ) -> Dict[str, Any] | List[Any]:
     """
     Fetch JSON with signed headers and emit test-expected error messages.
@@ -509,7 +510,7 @@ def _list_quarantined(ctx: typer.Context, url: str) -> None:
         ctx, url,
         on_http_msg=HTTP_ERROR_MSG,
         on_request_action="listing scripts",
-        on_generic_msg="Failed to fetch JSON",
+        on_generic_msg=FAILED_TO_FETCH_JSON,
     )
     for name in _names_from_legacy(data):
         typer.echo(name)
@@ -519,7 +520,7 @@ def _list_published(ctx: typer.Context, url: str, long: bool, columns: Optional[
         ctx, url,
         on_http_msg=HTTP_ERROR_MSG,
         on_request_action="listing scripts",
-        on_generic_msg="Failed to fetch JSON",
+        on_generic_msg=FAILED_TO_FETCH_JSON,
     )
     rows: List[Dict[str, Any]] = [x for x in data if isinstance(x, dict)]
     cols = _parse_columns_or_exit(columns)
