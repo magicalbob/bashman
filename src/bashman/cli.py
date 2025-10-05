@@ -1,4 +1,3 @@
-# src/bashman/cli.py
 import os
 import sys
 import re
@@ -25,15 +24,17 @@ VALID_STATUSES = ("published", "quarantined")
 
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
-HTTP_ERROR_MSG ="An HTTP error occurred",
+HTTP_ERROR_MSG ="An HTTP error occurred"
 FAILED_TO_FETCH_JSON = "Failed to fetch JSON"
 
 # ---- Config paths ----
 def get_config_dir() -> Path:
     return Path.home() / ".config" / "bashman"
 
+
 def get_config_file() -> Path:
     return get_config_dir() / "config.json"
+
 
 def load_config() -> dict:
     try:
@@ -42,17 +43,20 @@ def load_config() -> dict:
     except Exception:
         return {}
 
+
 def save_config(cfg: dict) -> None:
     p = get_config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w") as f:
         json.dump(cfg, f, indent=2)
 
+
 def default_install_dir() -> str:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return os.path.join(base, "bashman", "bin")
     return str(Path.home() / ".local" / "bin")
+
 
 # ---- Key utilities ----
 def validate_private_key(key_path: str) -> tuple[bool, str]:
@@ -98,6 +102,7 @@ def validate_private_key(key_path: str) -> tuple[bool, str]:
         return False, "Private key appears malformed (missing END marker)"
     return True, ""
 
+
 def get_public_key(key_path: str) -> str:
     try:
         from cryptography.hazmat.primitives import serialization
@@ -124,19 +129,11 @@ def get_public_key(key_path: str) -> str:
         typer.echo(f"Error: Could not derive public key from file: {e}", err=True)
         raise typer.Exit(1)
 
-# ---- Request signing (client) ----
-def _supports_headers_param(func) -> bool:
-    try:
-        sig = inspect.signature(func)
-    except (TypeError, ValueError):
-        return True
-    for p in sig.parameters.values():
-        if p.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return "headers" in sig.parameters
 
+# ---- Request signing (client) ----
 def _canonical_string(method: str, path_qs: str, date_str: str, nonce: str, body_sha256_hex: str) -> bytes:
     return f"{method.upper()}\n{path_qs}\n{date_str}\n{nonce}\n{body_sha256_hex}".encode("utf-8")
+
 
 def _load_private_key_for_signing(key_path: str):
     try:
@@ -162,6 +159,7 @@ def _load_private_key_for_signing(key_path: str):
             return signer, "ed25519"
     except Exception:
         pass
+
     try:
         if isinstance(pk, _rsa.RSAPrivateKey):
             def signer(msg: bytes) -> bytes:
@@ -173,6 +171,7 @@ def _load_private_key_for_signing(key_path: str):
             return signer, "rsa-pss-sha256"
     except Exception:
         pass
+
     try:
         if isinstance(pk, _ec.EllipticCurvePrivateKey):
             def signer(msg: bytes) -> bytes:
@@ -180,7 +179,9 @@ def _load_private_key_for_signing(key_path: str):
             return signer, "ecdsa-sha256"
     except Exception:
         pass
+
     return None, None
+
 
 def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: bytes | None) -> dict:
     try:
@@ -189,6 +190,7 @@ def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: 
         key_path = cfg.get("private_key_path")
         if not nickname or not key_path or not os.path.exists(key_path):
             return {}
+
         signer, alg = _load_private_key_for_signing(key_path)
         if signer is None:
             return {}
@@ -211,7 +213,8 @@ def build_signed_headers(ctx: typer.Context, method: str, url: str, body_bytes: 
     except Exception:
         return {}
 
-# ---- Typer callback ----
+
+# ---- CLI setup ----
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -221,9 +224,6 @@ def main(
         help="Override the server URL (default from config)"
     )
 ):
-    """
-    Load config and inject defaults for commands.
-    """
     cfg = load_config()
     resolved_server = (
         server_url
@@ -237,9 +237,11 @@ def main(
         "install_dir": cfg.get("install_dir"),
     }
 
+
 # ---- HTTP helpers ----
 def _echo_http_error(prefix: str, e: httpx.HTTPStatusError) -> None:
     typer.echo(f"✗ {prefix}: {e.response.status_code} - {e.response.text}", err=True)
+
 
 def _http_get_json(url: str, headers: Dict[str, str] | None) -> Any:
     try:
@@ -249,6 +251,7 @@ def _http_get_json(url: str, headers: Dict[str, str] | None) -> Any:
     resp.raise_for_status()
     return resp.json()
 
+
 def _http_get_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
     try:
         resp = httpx.get(url, headers=headers)
@@ -256,6 +259,7 @@ def _http_get_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
         resp = httpx.get(url)
     resp.raise_for_status()
     return getattr(resp, "content", b"") or b""
+
 
 def _fetch_json_safe(
     ctx: typer.Context,
@@ -265,13 +269,6 @@ def _fetch_json_safe(
     on_request_action: Optional[str] = None,
     on_generic_msg: str = FAILED_TO_FETCH_JSON,
 ) -> Dict[str, Any] | List[Any]:
-    """
-    Fetch JSON with signed headers and emit test-expected error messages.
-    - HTTPStatusError: prints `on_http_msg: <status> - <text>`
-    - RequestError: prints `An error occurred while <on_request_action>: <e>` if provided,
-                    else `on_generic_msg: <e>`
-    - Any other error: prints `on_generic_msg: <e>`
-    """
     headers = build_signed_headers(ctx, "GET", url, b"") or None
     try:
         data = _http_get_json(url, headers)
@@ -291,6 +288,7 @@ def _fetch_json_safe(
         typer.echo(f"✗ {on_generic_msg}: {e}", err=True)
         raise typer.Exit(1)
 
+
 def _fetch_bytes_safe(ctx: typer.Context, url: str) -> bytes:
     headers = build_signed_headers(ctx, "GET", url, b"") or None
     try:
@@ -306,9 +304,11 @@ def _fetch_bytes_safe(ctx: typer.Context, url: str) -> bytes:
         raise typer.Exit(1)
     return data
 
+
 # ---- Misc helpers ----
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name)) or "script"
+
 
 def _ensure_dir_writable(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
@@ -317,12 +317,14 @@ def _ensure_dir_writable(dest: Path) -> None:
     if not os.access(dest, os.W_OK | os.X_OK):
         raise RuntimeError(f"Install destination not writable: {dest}")
 
+
 def _atomic_write(path: Path, data: bytes, mode: int) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp") if path.suffix else Path(str(path) + ".tmp")
     with open(tmp, "wb") as f:
         f.write(data)
     os.chmod(tmp, mode)
     os.replace(tmp, path)
+
 
 def _parse_mode_opt(mode: str | None) -> int:
     if not mode:
@@ -332,6 +334,7 @@ def _parse_mode_opt(mode: str | None) -> int:
     except Exception:
         typer.echo("✗ Invalid --mode (use octal like 755)", err=True)
         raise typer.Exit(2)
+
 
 def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
     if dest_opt:
@@ -349,6 +352,7 @@ def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
     _ensure_dir_writable(dest_path)
     return dest_path
 
+
 def _determine_target_file(dest_path: Path, target_name: str, force: bool) -> Path:
     target_file = dest_path / target_name
     if target_file.exists() and not force:
@@ -356,17 +360,21 @@ def _determine_target_file(dest_path: Path, target_name: str, force: bool) -> Pa
         raise typer.Exit(3)
     return target_file
 
+
 def _meta_url(server: str, name: str, version: str | None) -> str:
     return f"{server}/api/packages/{name}" + (f"?version={version}" if version else "")
 
+
 def _download_url(server: str, name: str, version: str | None) -> str:
     return f"{server}/api/packages/{name}/download" + (f"?version={version}" if version else "")
+
 
 def _verify_published(meta: Dict[str, Any]) -> None:
     status = str(meta.get("status", "")).lower()
     if status != "published":
         typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
         raise typer.Exit(4)
+
 
 def _verify_hash(meta: Dict[str, Any], data: bytes, skip: bool) -> None:
     if skip:
@@ -376,6 +384,7 @@ def _verify_hash(meta: Dict[str, Any], data: bytes, skip: bool) -> None:
     if want and got != want:
         typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
         raise typer.Exit(5)
+
 
 def _validate_shebang_or_exit(path: str) -> None:
     with open(path, "rb") as f:
@@ -389,16 +398,18 @@ def _validate_shebang_or_exit(path: str) -> None:
             )
             raise typer.Exit(1)
 
+
 def _wants_modern_upload(
     name: Optional[str],
     version: Optional[str],
-    any_arrays: bool,
+    has_arrays: bool,
     has_manifest: bool,
-    set_pairs: List[str],
+    has_set_pairs: bool,
     desc_given: bool,
     author_given: bool,
 ) -> bool:
-    return any([name, version, any_arrays, has_manifest, set_pairs, desc_given, author_given])
+    return any([name, version, has_arrays, has_manifest, has_set_pairs, desc_given, author_given])
+
 
 def _parse_set_pairs(pairs: List[str]) -> Dict[str, str]:
     out: Dict[str, str] = {}
@@ -410,11 +421,13 @@ def _parse_set_pairs(pairs: List[str]) -> Dict[str, str]:
         out[k.strip()] = v.strip()
     return out
 
+
 def _normalize_keywords(existing: Any, extra: List[str]) -> List[str]:
     kw = existing or []
     if isinstance(kw, str):
         kw = [x.strip() for x in kw.split(",") if x.strip()]
     return list(kw) + list(extra)
+
 
 def _normalize_deps(existing: Any, extra: List[str]) -> Dict[str, str]:
     dep_map: Dict[str, str] = {}
@@ -433,11 +446,13 @@ def _normalize_deps(existing: Any, extra: List[str]) -> Dict[str, str]:
             dep_map[d.strip()] = "*"
     return dep_map
 
+
 def _normalize_platforms(existing: Any, extra: List[str]) -> List[str]:
     plats = existing or []
     if isinstance(plats, str):
         plats = [x.strip() for x in plats.split(",") if x.strip()]
     return list(plats) + list(extra)
+
 
 # ---- list rendering helpers ----
 def _render_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
@@ -461,12 +476,14 @@ def _render_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
             cells.append(str(v or "").ljust(widths[i]))
         typer.echo("  ".join(cells))
 
+
 def _columns_known() -> set[str]:
     return {
-        "name","version","description","author","homepage","repository","license",
-        "keywords","dependencies","platforms","shell_version","file_size","file_hash",
-        "status","created_at","updated_at","download_count"
+        "name", "version", "description", "author", "homepage", "repository", "license",
+        "keywords", "dependencies", "platforms", "shell_version", "file_size", "file_hash",
+        "status", "created_at", "updated_at", "download_count"
     }
+
 
 def _parse_columns_or_exit(columns: Optional[str]) -> List[str]:
     if not columns:
@@ -477,6 +494,7 @@ def _parse_columns_or_exit(columns: Optional[str]) -> List[str]:
         typer.echo(f"✗ Unknown column(s): {', '.join(unknown)}", err=True)
         raise typer.Exit(2)
     return cols
+
 
 def _print_delimited(rows: List[Dict[str, Any]], cols: List[str], sep: str) -> None:
     typer.echo(sep.join(cols))
@@ -489,8 +507,10 @@ def _print_delimited(rows: List[Dict[str, Any]], cols: List[str], sep: str) -> N
             vals.append(str(v))
         typer.echo(sep.join(vals))
 
+
 def _names_from_legacy(data: Any) -> List[str]:
     return [str(x) for x in data] if isinstance(data, list) else []
+
 
 def _names_from_published(data: Any) -> List[str]:
     if not isinstance(data, list):
@@ -505,6 +525,7 @@ def _names_from_published(data: Any) -> List[str]:
             out.append(nm)
     return out
 
+
 def _list_quarantined(ctx: typer.Context, url: str) -> None:
     data = _fetch_json_safe(
         ctx, url,
@@ -514,6 +535,7 @@ def _list_quarantined(ctx: typer.Context, url: str) -> None:
     )
     for name in _names_from_legacy(data):
         typer.echo(name)
+
 
 def _list_published(ctx: typer.Context, url: str, long: bool, columns: Optional[str], fmt: str) -> None:
     data = _fetch_json_safe(
@@ -545,6 +567,7 @@ def _list_published(ctx: typer.Context, url: str, long: bool, columns: Optional[
     for name in _names_from_published(data):
         typer.echo(name)
 
+
 # ---- publish helpers ----
 def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: bytes) -> None:
     url = f"{server}/scripts"
@@ -567,6 +590,7 @@ def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: b
     except Exception as e:
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
+
 
 def _modern_publish(
     ctx: typer.Context,
@@ -630,7 +654,7 @@ def _modern_publish(
         msg = resp.json().get("message", "created/updated")
         typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error(HTTP_ERROR_MSG, e)
+        _echo_http_error(TTP_ERROR_MSG, e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
@@ -638,6 +662,7 @@ def _modern_publish(
     except Exception as e:
         typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
         raise typer.Exit(1)
+
 
 # ---- Commands ----
 @app.command()
@@ -709,11 +734,13 @@ def init(
     typer.echo(f"Server: {server_url}")
     typer.echo(f"Install dir: {install_dir_abs}")
 
+
 @app.command()
 def start(host: str = "127.0.0.1", port: int = 8000):
     """Launch the FastAPI server via uvicorn."""
     cmd = [sys.executable, "-m", "uvicorn", "bashman.server.app:app", "--host", host, "--port", str(port)]
     os.execvp(cmd[0], cmd)
+
 
 @app.command()
 def publish(
@@ -726,14 +753,14 @@ def publish(
     dep: List[str] = typer.Option([], "--dep", help="Dependency (repeatable) as name=version"),
     platform: List[str] = typer.Option([], "--platform", help="Target platform (repeatable)"),
     set: List[str] = typer.Option([], "--set", "-s", help="Override simple metadata as key=value (description,author,homepage,repository,license,shell_version)"),
-    # Back-compat flags expected by tests:
-    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description (shorthand for --set description=...)"),
-    author: Optional[str] = typer.Option(None, "--author", help="Author (shorthand for --set author=...)"),
+    # Back-compat shorthands for tests:
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description (alias for --set description=...)"),
+    author: Optional[str] = typer.Option(None, "--author", help="Author (alias for --set author=...)"),
 ):
     """
     Upload a shell script to the server (signed if possible).
 
-    If any metadata flags, `--set`, or `--manifest` are provided, use the modern /api/packages endpoint.
+    If any metadata flags/arrays, `--set`, or `--manifest` are provided, use /api/packages.
     Otherwise, fall back to legacy /scripts for maximum compatibility.
     """
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
@@ -747,8 +774,9 @@ def publish(
         content_bytes = fh.read()
 
     wants_modern = _wants_modern_upload(
-        name, version, any([keyword, dep, platform]), bool(manifest), set,
-        desc_given=description is not None, author_given=author is not None
+        name, version, has_arrays=bool(keyword or dep or platform),
+        has_manifest=bool(manifest), has_set_pairs=bool(set),
+        desc_given=description is not None, author_given=author is not None,
     )
     if not wants_modern:
         _legacy_publish(ctx, server, path, content_bytes)
@@ -766,6 +794,7 @@ def publish(
         set_pairs=set_pairs, keywords=keyword, deps=dep, platforms=platform
     )
 
+
 # ---- list ----
 def _validate_status(status: str) -> str:
     s = (status or "published").lower()
@@ -774,10 +803,12 @@ def _validate_status(status: str) -> str:
         raise typer.Exit(2)
     return s
 
+
 def _url_for(server: str, status: str) -> str:
     if status == "quarantined":
         return f"{server}/scripts"
     return f"{server}/api/packages?status=published&limit=1000"
+
 
 @app.command(name="list")
 def list_cmd(
@@ -801,6 +832,7 @@ def list_cmd(
         _list_quarantined(ctx, url)
         return
     _list_published(ctx, url, long, columns, format)
+
 
 # ---- install ----
 @app.command()
@@ -845,6 +877,7 @@ def install(
         raise typer.Exit(1)
 
     typer.echo(f"✓ Installed {name}{(':'+version) if version else ''} → {target_file}")
+
 
 if __name__ == "__main__":
     app()
