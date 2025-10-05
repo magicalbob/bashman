@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+from typing import Optional
 import json
 import hashlib
 import uuid
@@ -379,36 +380,62 @@ def start(host: str = "127.0.0.1", port: int = 8000):
     ]
     os.execvp(cmd[0], cmd)
 
+
 @app.command()
-def publish(ctx: typer.Context, path: str):
-    """Upload a shell script to the server (signed if possible)."""
+def publish(
+    ctx: typer.Context,
+    path: str,
+    # NEW optional metadata flags
+    name: Optional[str] = typer.Option(None, "--name", help="Package name (default: filename)"),
+    version: Optional[str] = typer.Option(None, "--version", "-v", help="Version (e.g. 1.2.3; default: 0.1.0 for legacy)"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description"),
+    author: Optional[str] = typer.Option(None, "--author", help="Author"),
+    homepage: Optional[str] = typer.Option(None, "--homepage", help="Homepage URL"),
+    repository: Optional[str] = typer.Option(None, "--repository", help="Repository URL"),
+    license: Optional[str] = typer.Option(None, "--license", help="SPDX id or text"),
+    keyword: list[str] = typer.Option([], "--keyword", "-k", help="Add a keyword (repeatable)"),
+    dep: list[str] = typer.Option([], "--dep", help="Dependency (repeatable) as name=version"),
+    platform: list[str] = typer.Option([], "--platform", help="Target platform (repeatable)"),
+    shell_version: Optional[str] = typer.Option(None, "--shell-version", help="Shell version requirement"),
+    manifest: Optional[str] = typer.Option(None, "--manifest", help="Path to JSON manifest with fields"),
+):
+    """
+    Upload a shell script to the server (signed if possible).
+    If any metadata flags (or --manifest) are provided, use the modern /api/packages endpoint.
+    Otherwise, fall back to legacy /scripts for maximum compatibility.
+    """
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
 
     if not os.path.isfile(path):
         typer.echo("Error: file does not exist", err=True)
         raise typer.Exit(1)
 
-    try:
-        # Quick shebang validation from the first kilobyte
-        with open(path, "rb") as f:
-            snippet = f.read(1024)
-            first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
-            if not SHELL_REGEX.match(first_line):
-                typer.echo(
-                    "Error: file does not start with a recognized shell shebang "
-                    "(e.g. #!/bin/bash or #!/usr/bin/env bash)",
-                    err=True,
-                )
-                raise typer.Exit(1)
+    # Validate shebang quick check
+    with open(path, "rb") as f:
+        snippet = f.read(1024)
+        first_line = snippet.splitlines()[0].decode(errors="ignore") if snippet else ""
+        if not SHELL_REGEX.match(first_line):
+            typer.echo(
+                "Error: file does not start with a recognized shell shebang "
+                "(e.g. #!/bin/bash or #!/usr/bin/env bash)",
+                err=True,
+            )
+            raise typer.Exit(1)
 
-        # Build signature over the full content
-        with open(path, "rb") as fh_for_hash:
-            content_bytes = fh_for_hash.read()
+    # Decide flow
+    wants_metadata = any([
+        name, version, description, author, homepage, repository, license,
+        keyword, dep, platform, shell_version, manifest
+    ])
 
+    # Read full bytes for signing and (if needed) upload
+    with open(path, "rb") as fh:
+        content_bytes = fh.read()
+
+    if not wants_metadata:
+        # ----- legacy flow (unchanged) -----
         url = f"{server}/scripts"
         headers = build_signed_headers(ctx, "POST", url, content_bytes)
-
-        # Post using a fresh handle so we don't double-read
         with open(path, "rb") as fh_for_upload:
             files = {"file": (os.path.basename(path), fh_for_upload)}
             try:
@@ -417,11 +444,87 @@ def publish(ctx: typer.Context, path: str):
                 else:
                     resp = httpx.post(url, files=files)
             except TypeError:
-                # test stubs or older clients may not accept headers=; retry without it
                 resp = httpx.post(url, files=files)
             resp.raise_for_status()
-
         typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
+        return
+
+    # ----- modern flow with metadata -> /api/packages -----
+    # Assemble metadata (manifest first, then CLI flags override)
+    meta = {}
+    if manifest:
+        try:
+            with open(manifest) as mf:
+                m = json.load(mf)
+                if not isinstance(m, dict):
+                    raise ValueError("Manifest must be a JSON object")
+                meta.update(m)
+        except Exception as e:
+            typer.echo(f"✗ Failed to read manifest: {e}", err=True)
+            raise typer.Exit(2)
+
+    # Fill/override from CLI options
+    meta.setdefault("name", name or os.path.basename(path))
+    meta.setdefault("version", version or "0.1.0")
+    if description is not None: meta["description"] = description
+    if author is not None: meta["author"] = author
+    if homepage is not None: meta["homepage"] = homepage
+    if repository is not None: meta["repository"] = repository
+    if license is not None: meta["license"] = license
+    if shell_version is not None: meta["shell_version"] = shell_version
+
+    # Normalize list/map fields to the exact wire format the API expects (JSON-encoded strings)
+    # keywords
+    kw = meta.get("keywords", [])
+    if isinstance(kw, str):
+        kw = [x.strip() for x in kw.split(",") if x.strip()]
+    kw = list(kw) + list(keyword)
+    # dependencies
+    dep_map = meta.get("dependencies", {})
+    if isinstance(dep_map, list):
+        # allow ["a=1","b=^2"] forms
+        tmp = {}
+        for entry in dep_map:
+            if isinstance(entry, str) and "=" in entry:
+                k, v = entry.split("=", 1); tmp[k.strip()] = v.strip()
+        dep_map = tmp or {}
+    dep_map = dict(dep_map)
+    for d in dep:
+        if "=" in d:
+            k, v = d.split("=", 1)
+            dep_map[k.strip()] = v.strip()
+        else:
+            dep_map[d.strip()] = "*"  # bare name -> wildcard
+    # platforms
+    plats = meta.get("platforms", [])
+    if isinstance(plats, str):
+        plats = [x.strip() for x in plats.split(",") if x.strip()]
+    plats = list(plats) + list(platform)
+
+    # Build form
+    data = {
+        "name": str(meta["name"]),
+        "version": str(meta["version"]),
+        "description": str(meta.get("description") or f"Uploaded script: {os.path.basename(path)}"),
+        "author": meta.get("author"),
+        "homepage": meta.get("homepage"),
+        "repository": meta.get("repository"),
+        "license": meta.get("license"),
+        "keywords": json.dumps(kw),
+        "dependencies": json.dumps(dep_map),
+        "platforms": json.dumps(plats),
+        "shell_version": meta.get("shell_version"),
+    }
+
+    url = f"{server}/api/packages"
+    headers = build_signed_headers(ctx, "POST", url, content_bytes)
+    try:
+        with open(path, "rb") as fh_for_upload:
+            files = {"file": (os.path.basename(path), fh_for_upload)}
+            resp = httpx.post(url, data=data, files=files, headers=headers or None)
+        resp.raise_for_status()
+        msg = resp.json().get("message", "created/updated")
+        typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
         typer.echo(f"✗ An HTTP error occurred: {e.response.status_code} - {e.response.text}", err=True)
         raise typer.Exit(1)
