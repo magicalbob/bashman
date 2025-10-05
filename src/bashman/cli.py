@@ -25,8 +25,6 @@ VALID_STATUSES = ("published", "quarantined")
 
 SHELL_REGEX = re.compile(r'^#!/(?:usr/bin/|bin/)?(?:env\s+)?(sh|bash|zsh|ksh|fish)')
 
-HTTP_ERROR_MSG = "An HTTP error occurred"
-
 # ---- Config paths ----
 def get_config_dir() -> Path:
     return Path.home() / ".config" / "bashman"
@@ -236,7 +234,7 @@ def main(
         "install_dir": cfg.get("install_dir"),
     }
 
-# ---- Common small helpers ----
+# ---- HTTP helpers ----
 def _echo_http_error(prefix: str, e: httpx.HTTPStatusError) -> None:
     typer.echo(f"✗ {prefix}: {e.response.status_code} - {e.response.text}", err=True)
 
@@ -256,6 +254,56 @@ def _http_get_bytes(url: str, headers: Dict[str, str] | None) -> bytes:
     resp.raise_for_status()
     return getattr(resp, "content", b"") or b""
 
+def _fetch_json_safe(
+    ctx: typer.Context,
+    url: str,
+    *,
+    on_http_msg: str = "Failed to fetch JSON",
+    on_request_action: Optional[str] = None,
+    on_generic_msg: str = "Failed to fetch JSON",
+) -> Dict[str, Any] | List[Any]:
+    """
+    Fetch JSON with signed headers and emit test-expected error messages.
+    - HTTPStatusError: prints `on_http_msg: <status> - <text>`
+    - RequestError: prints `An error occurred while <on_request_action>: <e>` if provided,
+                    else `on_generic_msg: <e>`
+    - Any other error: prints `on_generic_msg: <e>`
+    """
+    headers = build_signed_headers(ctx, "GET", url, b"") or None
+    try:
+        data = _http_get_json(url, headers)
+        if not isinstance(data, (list, dict)):
+            raise ValueError("unexpected payload")
+        return data
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ {on_http_msg}: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        if on_request_action:
+            typer.echo(f"✗ An error occurred while {on_request_action}: {e}", err=True)
+        else:
+            typer.echo(f"✗ {on_generic_msg}: {e}", err=True)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"✗ {on_generic_msg}: {e}", err=True)
+        raise typer.Exit(1)
+
+def _fetch_bytes_safe(ctx: typer.Context, url: str) -> bytes:
+    headers = build_signed_headers(ctx, "GET", url, b"") or None
+    try:
+        data = _http_get_bytes(url, headers)
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ Failed to download: {e}", err=True)
+        raise typer.Exit(1)
+    if not data:
+        typer.echo("✗ Empty download from server", err=True)
+        raise typer.Exit(1)
+    return data
+
+# ---- Misc helpers ----
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name)) or "script"
 
@@ -298,6 +346,13 @@ def _resolve_install_dir(cfg: dict, dest_opt: str | None) -> Path:
     _ensure_dir_writable(dest_path)
     return dest_path
 
+def _determine_target_file(dest_path: Path, target_name: str, force: bool) -> Path:
+    target_file = dest_path / target_name
+    if target_file.exists() and not force:
+        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
+        raise typer.Exit(3)
+    return target_file
+
 def _meta_url(server: str, name: str, version: str | None) -> str:
     return f"{server}/api/packages/{name}" + (f"?version={version}" if version else "")
 
@@ -309,6 +364,15 @@ def _verify_published(meta: Dict[str, Any]) -> None:
     if status != "published":
         typer.echo(f"✗ Package is not published (status={status}). You can only install published packages.", err=True)
         raise typer.Exit(4)
+
+def _verify_hash(meta: Dict[str, Any], data: bytes, skip: bool) -> None:
+    if skip:
+        return
+    want = (meta.get("file_hash") or "").lower()
+    got = hashlib.sha256(data).hexdigest().lower()
+    if want and got != want:
+        typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
+        raise typer.Exit(5)
 
 def _validate_shebang_or_exit(path: str) -> None:
     with open(path, "rb") as f:
@@ -372,6 +436,113 @@ def _normalize_platforms(existing: Any, extra: List[str]) -> List[str]:
         plats = [x.strip() for x in plats.split(",") if x.strip()]
     return list(plats) + list(extra)
 
+# ---- list rendering helpers ----
+def _render_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
+    widths: List[int] = []
+    for i, c in enumerate(columns):
+        w = len(c)
+        for r in rows:
+            cell = r.get(c, "")
+            s = json.dumps(cell) if isinstance(cell, (dict, list)) else str(cell or "")
+            w = max(w, len(s))
+        widths.append(w)
+    header = "  ".join(c.ljust(widths[i]) for i, c in enumerate(columns))
+    typer.echo(header)
+    typer.echo("  ".join("-" * widths[i] for i in range(len(columns))))
+    for r in rows:
+        cells = []
+        for i, c in enumerate(columns):
+            v = r.get(c, "")
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            cells.append(str(v or "").ljust(widths[i]))
+        typer.echo("  ".join(cells))
+
+def _columns_known() -> set[str]:
+    return {
+        "name","version","description","author","homepage","repository","license",
+        "keywords","dependencies","platforms","shell_version","file_size","file_hash",
+        "status","created_at","updated_at","download_count"
+    }
+
+def _parse_columns_or_exit(columns: Optional[str]) -> List[str]:
+    if not columns:
+        return []
+    cols = [c.strip() for c in columns.split(",") if c.strip()]
+    unknown = [c for c in cols if c not in _columns_known()]
+    if unknown:
+        typer.echo(f"✗ Unknown column(s): {', '.join(unknown)}", err=True)
+        raise typer.Exit(2)
+    return cols
+
+def _print_delimited(rows: List[Dict[str, Any]], cols: List[str], sep: str) -> None:
+    typer.echo(sep.join(cols))
+    for r in rows:
+        vals = []
+        for k in cols:
+            v = r.get(k, "")
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            vals.append(str(v))
+        typer.echo(sep.join(vals))
+
+def _names_from_legacy(data: Any) -> List[str]:
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+def _names_from_published(data: Any) -> List[str]:
+    if not isinstance(data, list):
+        return []
+    out: List[str] = []
+    for item in data:
+        if isinstance(item, dict):
+            nm = item.get("name", "")
+        else:
+            nm = str(item)
+        if nm:
+            out.append(nm)
+    return out
+
+def _list_quarantined(ctx: typer.Context, url: str) -> None:
+    data = _fetch_json_safe(
+        ctx, url,
+        on_http_msg="An HTTP error occurred",
+        on_request_action="listing scripts",
+        on_generic_msg="Failed to fetch JSON",
+    )
+    for name in _names_from_legacy(data):
+        typer.echo(name)
+
+def _list_published(ctx: typer.Context, url: str, long: bool, columns: Optional[str], fmt: str) -> None:
+    data = _fetch_json_safe(
+        ctx, url,
+        on_http_msg="An HTTP error occurred",
+        on_request_action="listing scripts",
+        on_generic_msg="Failed to fetch JSON",
+    )
+    rows: List[Dict[str, Any]] = [x for x in data if isinstance(x, dict)]
+    cols = _parse_columns_or_exit(columns)
+
+    if cols:
+        if fmt == "json":
+            typer.echo(json.dumps([{k: r.get(k) for k in cols} for r in rows], indent=2))
+            return
+        if fmt == "csv":
+            _print_delimited(rows, cols, ",")
+            return
+        if fmt == "tsv":
+            _print_delimited(rows, cols, "\t")
+            return
+        _render_table(rows, cols)
+        return
+
+    if long:
+        _render_table(rows, ["name", "version", "description", "author", "license"])
+        return
+
+    for name in _names_from_published(data):
+        typer.echo(name)
+
+# ---- publish helpers ----
 def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: bytes) -> None:
     url = f"{server}/scripts"
     headers = build_signed_headers(ctx, "POST", url, content_bytes)
@@ -385,7 +556,7 @@ def _legacy_publish(ctx: typer.Context, server: str, path: str, content_bytes: b
         resp.raise_for_status()
         typer.echo(f"✓ Quarantined: {os.path.basename(path)}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error(HTTP_ERROR_MSG, e)
+        _echo_http_error("An HTTP error occurred", e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
@@ -421,16 +592,13 @@ def _modern_publish(
             typer.echo(f"✗ Failed to read manifest: {e}", err=True)
             raise typer.Exit(2)
 
-    # Required-ish fields
     meta.setdefault("name", name or os.path.basename(path))
     meta.setdefault("version", version or "0.1.0")
 
-    # Simple string fields via --set key=value
     for k in ("description", "author", "homepage", "repository", "license", "shell_version"):
         if k in set_pairs:
             meta[k] = set_pairs[k]
 
-    # Collections
     kw = _normalize_keywords(meta.get("keywords", []), keywords)
     dep_map = _normalize_deps(meta.get("dependencies", {}), deps)
     plats = _normalize_platforms(meta.get("platforms", []), platforms)
@@ -459,7 +627,7 @@ def _modern_publish(
         msg = resp.json().get("message", "created/updated")
         typer.echo(f"✓ {msg}")
     except httpx.HTTPStatusError as e:
-        _echo_http_error(HTTP_ERROR_MSG, e)
+        _echo_http_error("An HTTP error occurred", e)
         raise typer.Exit(1)
     except httpx.RequestError as e:
         typer.echo(f"✗ An error occurred while publishing: {e}", err=True)
@@ -595,7 +763,7 @@ def publish(
         set_pairs=set_pairs, keywords=keyword, deps=dep, platforms=platform
     )
 
-# ---- list helpers ----
+# ---- list ----
 def _validate_status(status: str) -> str:
     s = (status or "published").lower()
     if s not in VALID_STATUSES:
@@ -607,46 +775,6 @@ def _url_for(server: str, status: str) -> str:
     if status == "quarantined":
         return f"{server}/scripts"
     return f"{server}/api/packages?status=published&limit=1000"
-
-def _render_table(rows: List[Dict[str, Any]], columns: List[str]) -> None:
-    # compute widths
-    widths: List[int] = []
-    for i, c in enumerate(columns):
-        w = len(c)
-        for r in rows:
-            cell = r.get(c, "")
-            s = json.dumps(cell) if isinstance(cell, (dict, list)) else str(cell or "")
-            w = max(w, len(s))
-        widths.append(w)
-    # header
-    header = "  ".join(c.ljust(widths[i]) for i, c in enumerate(columns))
-    typer.echo(header)
-    typer.echo("  ".join("-" * widths[i] for i in range(len(columns))))
-    # rows
-    for r in rows:
-        cells = []
-        for i, c in enumerate(columns):
-            v = r.get(c, "")
-            if isinstance(v, (dict, list)):
-                v = json.dumps(v)
-            cells.append(str(v or "").ljust(widths[i]))
-        typer.echo("  ".join(cells))
-
-def _names_from_legacy(data: Any) -> List[str]:
-    return [str(x) for x in data] if isinstance(data, list) else []
-
-def _names_from_published(data: Any) -> List[str]:
-    if not isinstance(data, list):
-        return []
-    out: List[str] = []
-    for item in data:
-        if isinstance(item, dict):
-            nm = item.get("name", "")
-        else:
-            nm = str(item)
-        if nm:
-            out.append(nm)
-    return out
 
 @app.command(name="list")
 def list_cmd(
@@ -666,70 +794,12 @@ def list_cmd(
     server = (ctx.obj or {}).get("server_url", DEFAULT_SERVER_URL)
     status = _validate_status(status)
     url = _url_for(server, status)
+    if status == "quarantined":
+        _list_quarantined(ctx, url)
+        return
+    _list_published(ctx, url, long, columns, format)
 
-    try:
-        headers = build_signed_headers(ctx, "GET", url, b"") or None
-        data = _http_get_json(url, headers)
-        if status == "quarantined":
-            # legacy: names only
-            for name in _names_from_legacy(data):
-                typer.echo(name)
-            return
-
-        # published API: can format
-        rows: List[Dict[str, Any]] = [x for x in data if isinstance(x, dict)]
-        if columns:
-            cols = [c.strip() for c in columns.split(",") if c.strip()]
-            # Validate requested columns
-            known = {
-                "name","version","description","author","homepage","repository","license",
-                "keywords","dependencies","platforms","shell_version","file_size","file_hash",
-                "status","created_at","updated_at","download_count"
-            }
-            unknown = [c for c in cols if c not in known]
-            if unknown:
-                typer.echo(f"✗ Unknown column(s): {', '.join(unknown)}", err=True)
-                raise typer.Exit(2)
-            if format == "json":
-                out = [{k: r.get(k) for k in cols} for r in rows]
-                typer.echo(json.dumps(out, indent=2))
-                return
-            if format in ("csv", "tsv"):
-                sep = "," if format == "csv" else "\t"
-                typer.echo(sep.join(cols))
-                for r in rows:
-                    vals = []
-                    for k in cols:
-                        v = r.get(k, "")
-                        if isinstance(v, (dict, list)):
-                            v = json.dumps(v)
-                        vals.append(str(v))
-                    typer.echo(sep.join(vals))
-                return
-            _render_table(rows, cols)
-            return
-
-        if long:
-            _render_table(rows, ["name", "version", "description", "author", "license"])
-            return
-
-        # Just names by default
-        for name in _names_from_published(data):
-            typer.echo(name)
-
-    except httpx.HTTPStatusError as e:
-        _echo_http_error(HTTP_ERROR_MSG, e)
-        raise typer.Exit(1)
-    except httpx.RequestError as e:
-        typer.echo(f"✗ An error occurred while listing scripts: {e}", err=True)
-        raise typer.Exit(1)
-    except ValueError as e:
-        typer.echo(f"✗ Failed to parse server response: {e}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ An unexpected error occurred: {e}", err=True)
-        raise typer.Exit(1)
-
+# ---- install ----
 @app.command()
 def install(
     ctx: typer.Context,
@@ -746,48 +816,23 @@ def install(
     """
     cfg = ctx.obj or {}
     server = cfg.get("server_url", DEFAULT_SERVER_URL)
+
     dest_path = _resolve_install_dir(cfg, dest)
-    target_file = (dest_path / (as_name or _safe_filename(name)))
-    if target_file.exists() and not force:
-        typer.echo(f"✗ Target already exists: {target_file}. Use --force to overwrite.", err=True)
-        raise typer.Exit(3)
+    target_name = as_name or _safe_filename(name)
+    target_file = _determine_target_file(dest_path, target_name, force)
 
     meta_url = _meta_url(server, name, version)
     dl_url = _download_url(server, name, version)
 
-    # Fetch meta
-    try:
-        meta = _http_get_json(meta_url, build_signed_headers(ctx, "GET", meta_url, b"") or None)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to fetch metadata: {e}", err=True)
-        raise typer.Exit(1)
-
-    _verify_published(meta)
-
-    # Download
-    try:
-        data = _http_get_bytes(dl_url, build_signed_headers(ctx, "GET", dl_url, b"") or None)
-    except httpx.HTTPStatusError as e:
-        typer.echo(f"✗ Failed to download: {e.response.status_code} - {e.response.text}", err=True)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.echo(f"✗ Failed to download: {e}", err=True)
-        raise typer.Exit(1)
-
-    if not data:
-        typer.echo("✗ Empty download from server", err=True)
-        raise typer.Exit(1)
-
-    # Verify hash unless skipped
-    if not no_verify:
-        want = (meta.get("file_hash") or "").lower()
-        got = hashlib.sha256(data).hexdigest().lower()
-        if want and got != want:
-            typer.echo(f"✗ SHA256 mismatch (expected {want}, got {got}). Use --no-verify to bypass.", err=True)
-            raise typer.Exit(5)
+    meta = _fetch_json_safe(
+        ctx, meta_url,
+        on_http_msg="Failed to fetch metadata",
+        on_request_action="fetching metadata",
+        on_generic_msg="Failed to fetch metadata",
+    )
+    _verify_published(meta)  # type: ignore[arg-type]
+    data = _fetch_bytes_safe(ctx, dl_url)
+    _verify_hash(meta, data, skip=no_verify)  # type: ignore[arg-type]
 
     file_mode = _parse_mode_opt(mode)
     try:
