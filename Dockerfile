@@ -38,4 +38,4 @@ RUN poetry install --without dev --no-interaction --no-ansi
 EXPOSE 8000
 
 # Launch the server via Uvicorn
-CMD ["uvicorn", "bashman.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "bashman.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
