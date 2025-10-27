@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Install system build deps
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential curl shellcheck && \
+    apt-get install -y --no-install-recommends build-essential curl shellcheck sqlite3 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
