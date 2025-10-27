@@ -147,8 +147,10 @@ deploy_bashman:
     - python3 -m venv /tmp/venv
     - . /tmp/venv/bin/activate
     - pip install -e ".[dev]"
+    - mkdir -p $HOME/.ssh
     - echo "$BASHMAN_SSH_KEY" > $HOME/.ssh/id_bashman
     - chmod -R 600 $HOME/.ssh
+    - chmod 700 $HOME/.ssh
     - mkdir install-dir
     - python src/bashman/cli.py init --nickname developer --key-file $HOME/.ssh/id_bashman --install-dir ./install-dir
     - python src/bashman/cli.py list
