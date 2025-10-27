@@ -147,13 +147,13 @@ deploy_bashman:
     - python3 -m venv /tmp/venv
     - . /tmp/venv/bin/activate
     - pip install -e ".[dev]"
-    - ssh-keygen -f /root/.ssh/id_ed25519 -N ""
+    - echo "$BASHMAN_SSH_KEY" > $HOME/.ssh/id_bashman
+    - chmod -R 600 $HOME/.ssh
     - mkdir install-dir
-    - python src/bashman/cli.py init --nickname developer --key-file /root/.ssh/id_ed25519 --install-dir ./install-dir
+    - python src/bashman/cli.py init --nickname developer --key-file $HOME/.ssh/id_bashman --install-dir ./install-dir
     - python src/bashman/cli.py list
     - python src/bashman/cli.py publish ./bin/rand_pass_key || echo "Already published, continuing"
     - python src/bashman/cli.py list
     - find ./install-dir
     - python src/bashman/cli.py install rand_pass_key
     - find ./install-dir
-
