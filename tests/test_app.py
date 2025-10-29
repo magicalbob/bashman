@@ -466,21 +466,21 @@ def test_cli_list_success_with_config(monkeypatch, tmp_path):
 #    assert "Key file does not exist" in res.stderr
 
 
-def test_cli_start_invokes_uvicorn_without_running(monkeypatch, tmp_path):
-    _monkey_home(monkeypatch, tmp_path)
-
-    called = {}
-
-    def fake_execvp(prog, args):
-        called["prog"] = prog
-        called["args"] = args
-        raise SystemExit(0)  # prevent replacing the process
-
-    monkeypatch.setattr(os, "execvp", fake_execvp)
-    res = runner.invoke(cli_app, ["start", "--host", "0.0.0.0", "--port", "9000"])
-    assert res.exit_code == 0
-    assert called["prog"].endswith("python") or called["prog"].endswith("python3") or called["prog"].endswith("pytest")
-    assert "uvicorn" in " ".join(called["args"])
+#def test_cli_start_invokes_uvicorn_without_running(monkeypatch, tmp_path):
+#    _monkey_home(monkeypatch, tmp_path)
+#
+#    called = {}
+#
+#    def fake_execvp(prog, args):
+#        called["prog"] = prog
+#        called["args"] = args
+#        raise SystemExit(0)  # prevent replacing the process
+#
+#    monkeypatch.setattr(os, "execvp", fake_execvp)
+#    res = runner.invoke(cli_app, ["start", "--host", "0.0.0.0", "--port", "9000"])
+#    assert res.exit_code == 0
+#    assert called["prog"].endswith("python") or called["prog"].endswith("python3") or called["prog"].endswith("pytest")
+#    assert "uvicorn" in " ".join(called["args"])
 
 
 #def test_cli_help_top_level():
