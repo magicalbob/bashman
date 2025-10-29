@@ -97,6 +97,8 @@ def validate_private_key(key_path: str) -> tuple[bool, str]:
                 return False, "File contains invalid private key data"
     except ImportError:
         return True, "Warning: cryptography library not available, doing basic validation only"
+    except Exception as e:
+        return False, f"invalid private key data: {e}"
 
     if "-----BEGIN" in content and "-----END" not in content:
         return False, "Private key appears malformed (missing END marker)"
