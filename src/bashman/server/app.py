@@ -845,3 +845,41 @@ async def html_aware_http_exception_handler(request: Request, exc: HTTPException
     <p><a class="button" href="/">Back to registry</a> <small>or open <a href="/docs">API docs</a></small></p>
     """
     return HTMLResponse(html, status_code=exc.status_code)
+
+async def _ensure_admin(request: Request, database: DatabaseInterface = Depends(get_database)) -> None:
+    """
+    Ensure the caller (X-Bashman-User header) is an admin user.
+    Raises 401/403 if not authenticated or not admin.
+    """
+    nickname = request.headers.get("X-Bashman-User")
+    if not nickname:
+        raise HTTPException(401, "Missing Bashman auth headers")
+    try:
+        user = await database.get_user(nickname)
+    except Exception:
+        user = None
+    if not user:
+        raise HTTPException(401, "Unknown user")
+    if not user.get("admin"):
+        raise HTTPException(403, "Admin privileges required")
+    return
+
+# Add among /api/packages endpoints
+@app.delete("/api/packages/{name}", response_model=dict)
+async def remove_package(
+    name: str,
+    _admin: None = Depends(_ensure_admin),
+    database: DatabaseInterface = Depends(get_database),
+):
+    """
+    Remove all non-deleted versions of a package. Admin users only.
+    """
+    versions = await database.get_package_versions(name)
+    if not versions:
+        raise HTTPException(404, f"Package {name} not found")
+    deleted = 0
+    for v in versions:
+        ok = await database.delete_package(name, v)
+        if ok:
+            deleted += 1
+    return {"status": "deleted", "name": name, "versions_deleted": deleted}

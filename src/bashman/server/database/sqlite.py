@@ -30,6 +30,23 @@ class SQLiteDatabase(DatabaseInterface):
         await self._db.execute(query, (nickname, public_key, 0))
         await self._db.commit()
 
+    async def get_user(self, nickname: str) -> Optional[Dict[str, Any]]:
+        """Return user record including admin flag or None."""
+        cur = await self._db.execute(
+            "SELECT id, nickname, public_key, admin, created_at FROM users WHERE nickname = ?",
+            (nickname,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "nickname": row[1],
+            "public_key": row[2],
+            "admin": bool(row[3]),
+            "created_at": row[4],
+        }
+
     async def _create_schema(self) -> None:
         """Create database tables"""
         schema = """

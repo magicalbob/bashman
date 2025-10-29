@@ -893,6 +893,33 @@ def install(
 
     typer.echo(f"✓ Installed {name}{(':'+version) if version else ''} → {target_file}")
 
+@app.command()
+def rm(ctx: typer.Context, package_name: str):
+    """
+    Remove a package from the registry. Caller must be an admin.
+    Usage: bashman rm package_name
+    """
+    cfg = ctx.obj or {}
+    server = cfg.get("server_url", DEFAULT_SERVER_URL)
+    url = f"{server}/api/packages/{package_name}"
+    headers = build_signed_headers(ctx, "DELETE", url, b"") or None
+    try:
+        try:
+            resp = httpx.delete(url, headers=headers) if headers is not None else httpx.delete(url)
+        except TypeError:
+            resp = httpx.delete(url)
+        resp.raise_for_status()
+        try:
+            j = resp.json()
+        except Exception:
+            j = {"status": resp.status_code}
+        typer.echo(f"✓ Deleted {package_name}: {j}")
+    except httpx.HTTPStatusError as e:
+        typer.echo(f"✗ Failed to delete {package_name}: {e.response.status_code} - {e.response.text}", err=True)
+        raise typer.Exit(1)
+    except httpx.RequestError as e:
+        typer.echo(f"✗ Request failed: {e}", err=True)
+        raise typer.Exit(1)
 
 if __name__ == "__main__":
     app()
