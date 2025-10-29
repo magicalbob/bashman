@@ -70,6 +70,32 @@ Best practice recommendations
 
 -   **Observability**: add logging and metrics around publish queue depth, ShellCheck failures, publish successes/failures, and download counts for operational visibility.
 
+Removing packages (rm)
+----------------------
+
+-   Purpose: Permanently remove a package from the registry (metadata + content). This is an administrative action.
+
+-   Server requirement: only users marked as admin can delete packages.
+
+-   CLI usage:
+
+    -   Remove latest version: `bashman rm <package-name>`
+
+Examples:
+
+Code
+
+```
+# remove latest published version
+bashman rm my-script
+```
+
+Admin user requirement and DB update
+
+-   The server enforces that only admin users may delete packages. The user record has a boolean admin flag (0 = non-admin, 1 = admin).
+
+-   Manually set admin = 1 for chosen user on the sqlite3 database on the server to enable rm.
+
 Installing packages
 -------------------
 
