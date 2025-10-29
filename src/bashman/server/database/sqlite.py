@@ -26,8 +26,8 @@ class SQLiteDatabase(DatabaseInterface):
             await self._db.close()
 
     async def store_user_info(self, nickname: str, public_key: str) -> None:
-        query = "INSERT INTO users (nickname, public_key, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-        await self._db.execute(query, (nickname, public_key))
+        query = "INSERT INTO users (nickname, public_key, admin, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)"
+        await self._db.execute(query, (nickname, public_key, 0))
         await self._db.commit()
 
     async def _create_schema(self) -> None:
@@ -37,6 +37,7 @@ class SQLiteDatabase(DatabaseInterface):
             id INTEGER PRIMARY KEY,
             nickname TEXT NOT NULL UNIQUE,
             public_key TEXT NOT NULL UNIQUE,
+            admin INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
