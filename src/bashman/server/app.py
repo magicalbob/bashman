@@ -862,7 +862,6 @@ async def _ensure_admin(request: Request, database: DatabaseInterface = Depends(
         raise HTTPException(401, "Unknown user")
     if not user.get("admin"):
         raise HTTPException(403, "Admin privileges required")
-    return
 
 # Add among /api/packages endpoints
 @app.delete("/api/packages/{name}", response_model=dict)
