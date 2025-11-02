@@ -3,6 +3,7 @@ import os
 import re
 import json
 import tempfile
+import importlib, sys
 from pathlib import Path
 
 import pytest
@@ -28,26 +29,29 @@ runner = CliRunner()
 
 @pytest.fixture
 def client():
-    """Create test client with isolated sqlite database per test"""
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
 
-    # ensure app.py picks our temp DB path
     original_db_path = os.environ.get("BASHMAN_DB_PATH")
     os.environ["BASHMAN_DB_PATH"] = db_path
 
+    # Ensure we import a fresh copy of the app module after setting env
+    sys.modules.pop("bashman.server.app", None)
     try:
-        from bashman.server.app import app  # import AFTER env var set
-        with TestClient(app) as test_client:
+        mod = importlib.import_module("bashman.server.app")
+        # Use TestClient as a context manager so startup/shutdown run
+        with TestClient(mod.app) as test_client:
             yield test_client
     finally:
+        # cleanup env and DB file
         if original_db_path is not None:
             os.environ["BASHMAN_DB_PATH"] = original_db_path
         else:
             os.environ.pop("BASHMAN_DB_PATH", None)
         if os.path.exists(db_path):
             os.unlink(db_path)
-
+        # ensure module will be reloaded next time a test sets the env differently
+        sys.modules.pop("bashman.server.app", None)
 
 # ---------------------------
 # Legacy endpoints (back-compat)
