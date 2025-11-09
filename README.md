@@ -1,128 +1,95 @@
-Bashman: The Package Manager for Bash Scripts
-=============================================
+Bashman --- package manager for single-file shell scripts
+=======================================================
 
-**Bashman** is a tiny registry + CLI for shipping single-file shell scripts with versioning and metadata.
+Bashman provides a lightweight registry + CLI for shipping, versioning, and installing single-file shell scripts with searchable metadata and optional request signing. It's intended as a more structured alternative to ad-hoc GitHub gists or manual script distribution.
 
--   Backend: FastAPI + SQLite (content stored as BLOBs, FTS5 search, basic download stats)
+Key goals
 
--   CLI: Typer (`init`, `start`, `publish`, `list`, `install`)
+-   Make publishing, discovering, and installing reusable shell scripts reproducible and auditable.
 
--   Optional request-signing (Ed25519 / RSA-PSS-SHA256 / ECDSA-SHA256)
+-   Keep the server small and self-hostable while supporting signing, search, and simple metrics.
 
-> The server exposes JSON APIs under `/api/*`. Legacy endpoints (`/scripts`) exist for back-compat with older CLI flows.
+-   Provide a CLI workflow that mirrors package managers (publish, list, install, rm) for scripts.
 
-Public Best Efforts Instance
-----------------------------
+Highlights
 
-**URL:** https://bashman.ellisbs.co.uk
+-   **Backend:** FastAPI + SQLite (BLOB content storage; FTS5 full-text search; basic download stats)
 
--   **Best-efforts service only.** This public instance is provided as a convenience and is explicitly a development / staging instance.
+-   **CLI:** Typer commands: `init`, `start`, `publish`, `list`, `install`, `rm`
 
--   **No guarantee of availability.** The instance may be offline, rate-limited, or periodically wiped without notice.
+-   **Signing:** Optional request signing (Ed25519, RSA-PSS-SHA256, ECDSA-SHA256) and nonce replay protections
 
--   **No guarantee of persistence.** Packages published to this site should be considered ephemeral; do not rely on it as primary storage for production artifacts.
-
--   **Security and access.** While the CLI can interact with the site and sign requests, the site is operated in a best-efforts mode and should not be relied on for strict security guarantees or regulatory compliance.
-
--   **Recommendation.** Treat the public instance as a demonstration or temporary staging area only. For anything you depend on, run your own server or use a durable, managed service.
-
-> The CLI defaults to using this best-efforts URL. You can override it during `init` or with `--server-url` when running commands.
+-   **Compatibility:** JSON APIs under `/api/*`; legacy `/scripts` endpoints for older CLI flows
 
 Quickstart
 ----------
 
-bash
+1.  Install (development)
 
-```
-# 1) install (dev)
+
+```bash
 python -m pip install --upgrade pip
 pip install -e .
 
-# 2) start server (localhost:8000)
+```
+
+1.  Start server (localhost:8000)
+
+
+```bash
 bashman start
 
-# 3) init client (registers your pubkey on the server)
+```
+
+1.  Initialize client (registers your pubkey on the server)
+
+```bash
 bashman init --nickname you --key-file ~/.ssh/id_ed25519 --server-url http://127.0.0.1:8000
 
 ```
 
-Publishing scripts
-------------------
+Publish a script (two options)
 
-You now have two ways to publish from the CLI: legacy upload or rich upload. See the usage examples in other sections for full command forms.
+-   Legacy: `bashman publish ./myscript.sh` → POST `/scripts`, auto-version `0.1.0`, status `quarantined`
 
--   Legacy upload: `bashman publish ./myscript.sh` → `POST /scripts`, version `0.1.0`, enters `quarantined`.
+-   Rich: `bashman publish --manifest ./manifest.json ./myscript.sh` → POST `/api/packages` (multipart) with full metadata, status `quarantined`
 
--   Rich upload: pass metadata flags or `--manifest` → `POST /api/packages` (multipart), full metadata populated, enters `quarantined`.
+Install
 
-Best practice recommendations
------------------------------
-
--   **Do not use the public site for production artifacts.** Host a private Bashman instance for production usage.
-
--   **Self-hosting** is simple: run `bashman start` on a server, configure `BASHMAN_DB_PATH` to a persisted path, and run behind HTTPS and a reverse proxy.
-
--   **Auth** (`BASHMAN_REQUIRE_AUTH=1`): ensure the server has the `cryptography` package installed and a stable deployment so signatures and nonce replay protection work reliably.
-
--   **Auto-publish** (`BASHMAN_AUTO_PUBLISH=1`) runs a background worker that processes queued packages; enable it on servers where background processing is acceptable.
-
--   **Backups and persistence**: SQLite is used by default; back up the DB file, enable WAL mode, and schedule vacuuming, or migrate to a more robust DB for higher scale.
-
--   **Observability**: add logging and metrics around publish queue depth, ShellCheck failures, publish successes/failures, and download counts for operational visibility.
-
-Removing packages (rm)
-----------------------
-
--   Purpose: Permanently remove a package from the registry (metadata + content). This is an administrative action.
-
--   Server requirement: only users marked as admin can delete packages.
-
--   CLI usage:
-
-    -   Remove latest version: `bashman rm <package-name>`
-
-Examples:
-
-Code
-
-```
-# remove latest published version
-bashman rm my-script
-```
-
-Admin user requirement and DB update
-
--   The server enforces that only admin users may delete packages. The user record has a boolean admin flag (0 = non-admin, 1 = admin).
-
--   Manually set admin = 1 for chosen user on the sqlite3 database on the server to enable rm.
-
-Installing packages
--------------------
-
-bash
-
-```
+```bash
 # latest
 bashman install hello-world
 
 # specific version
 bashman install hello-world -v 1.2.3
 
-# override install dir / filename
+# custom destination and filename
 bashman install hello-world --dest ~/.local/bin --as hello
 
 ```
 
--   The CLI defaults to the install dir you set during `init` (`--install-dir`).
+-   Default install dir is set during `init`
 
--   SHA256 verification is enabled by default; use `--no-verify` to skip.
+-   SHA256 verification enabled by default; use `--no-verify` to skip
 
-Environment configuration highlights
-------------------------------------
+Remove packages (admin only)
 
--   **BASHMAN_SERVER_URL** --- CLI / client server URL (packaged CLI defaults to https://bashman.ellisbs.co.uk)
+```bash
+# remove latest published version
+bashman rm my-script
 
--   **BASHMAN_DB_PATH** --- SQLite file path for server storage
+```
+
+-   Only admin users may delete packages; set `admin = 1` in the server sqlite3 user record to grant access
+
+Configuration and environment
+-----------------------------
+
+Important environment variables
+
+-   **BASHMAN_SERVER_URL** --- CLI default server URL (packaged default: https://bashman.ellisbs.co.uk)
+
+-   **BASHMAN_DB_PATH** --- SQLite file path used by the server
 
 -   **BASHMAN_REQUIRE_AUTH** --- set `1` to enforce auth on legacy `/scripts` endpoints
 
@@ -130,25 +97,46 @@ Environment configuration highlights
 
 -   **BASHMAN_SHELLCHECK_MODE** --- `off | best-effort | enforce`
 
--   **BASHMAN_SHELLCHECK_ARGS** --- additional args passed to `shellcheck`
+-   **BASHMAN_SHELLCHECK_ARGS** --- extra args passed to shellcheck
 
-Security and operational notes
-------------------------------
+Operational tips
 
--   The CLI signs requests when a private key is configured; the server verifies signatures only when auth is enforced.
+-   Use WAL mode and regular backups for the SQLite DB; consider migrating to a server-grade DB at scale
 
--   Nonce replay protection is in-memory per server process; for multi-process or clustered deployments use a shared store or centralize the signer/verification service.
+-   For clustered/multi-process deployments, replace in-memory nonce store with a shared store for replay protection
 
--   ShellCheck gating can block publishing in `enforce` mode; `best-effort` skips when ShellCheck is not installed. Log ShellCheck outcomes for visibility.
+-   Run server behind HTTPS + reverse proxy in production; ensure `cryptography` is installed when auth is required
 
--   Algorithm labels should be consistent between CLI and server to avoid verification mismatches.
+Public instance and disclaimers
+-------------------------------
 
-Disclaimer
-----------
+Public demo site: https://bashman.ellisbs.co.uk
 
-The public site at https://bashman.ellisbs.co.uk is provided on a best-efforts basis and is currently a development site. There is no SLA, no guarantee of uptime, and published content may not be persisted. For production use, run your own Bashman server or use other durable storage and hosting options.
+-   **Best-efforts development instance.** Do not rely on this site for production artifacts or guaranteed persistence.
 
-Contributing and Support
-------------------------
+-   **No SLA or uptime guarantee.** The instance may be offline, rate-limited, or periodically wiped.
 
-Contributions are welcome. Open issues or PRs for bugs and improvements. For production deployments, add monitoring, backups, and consider a more robust queue/backend for multi-process or high-scale scenarios.
+-   For production use, self-host with persistent DB, backups, and monitoring.
+
+Contributing and operations checklist
+-------------------------------------
+
+-   Add tests for publish and install flows, and ShellCheck gating behavior
+
+-   CI: run ShellCheck, unit tests for signature verification, and sqlite WAL backup verification
+
+-   Monitoring: publish queue depth, ShellCheck failures, publish success/failure counts, download metrics
+
+-   Docs: add an example manifest schema, API examples for `/api/packages`, and a migration note for admins
+
+### Rationale and small improvements
+
+-   Lead with the problem and value proposition so new visitors immediately understand why Bashman exists.
+
+-   Move the public-instance and disclaimer up front to prevent accidental reliance on demo site.
+
+-   Condense environment and operational guidance into a compact section for operators.
+
+-   Show the two publish modes (legacy vs rich) clearly and give command examples for common workflows.
+
+-   Add a short contributing/ops checklist to guide production hardening.
