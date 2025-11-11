@@ -112,13 +112,13 @@ Operational tips
 Public instance and disclaimers
 -------------------------------
 
-Public demo site: https://bashman.ellisbs.co.uk
+**Public demo site: https://bashman.ellisbs.co.uk** This is a best-effort public demo. Any visitor may register an account. The server stores only your **unique nickname** and the **public key** you register. No private keys, sensitive secrets, or private user data are collected. Do not rely on this instance for production artifacts, guaranteed persistence, or long-term availability. For production use, self-host with a persistent database, backups, and monitoring. Raise an issue if you want help with self hosting.
 
--   **Best-efforts development instance.** Do not rely on this site for production artifacts or guaranteed persistence.
+### Short registration confirmation message (for the web UI)
 
--   **No SLA or uptime guarantee.** The instance may be offline, rate-limited, or periodically wiped.
+When a user successfully registers, display:
 
--   For production use, self-host with persistent DB, backups, and monitoring.
+Registration successful. Your nickname and public key are now registered on the demo server. No other personal data is stored. This demo instance is for evaluation only --- do not upload production secrets or rely on long-term availability.
 
 Contributing and operations checklist
 -------------------------------------
