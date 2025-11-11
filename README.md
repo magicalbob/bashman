@@ -3,6 +3,8 @@ Bashman --- package manager for single-file shell scripts
 
 Bashman provides a lightweight registry + CLI for shipping, versioning, and installing single-file shell scripts with searchable metadata and optional request signing. It's intended as a more structured alternative to ad-hoc GitHub gists or manual script distribution.
 
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/chunkwrap?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/chunkwrap)
+
 Key goals
 
 -   Make publishing, discovering, and installing reusable shell scripts reproducible and auditable.
